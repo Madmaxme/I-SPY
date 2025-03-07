@@ -45,11 +45,21 @@ def setup_directories():
         os.makedirs(RESULTS_DIR)
         print(f"Created results directory: {RESULTS_DIR}")
     
-    # Create a directory for storing extracted images
-    images_dir = os.path.join(RESULTS_DIR, "images")
-    if not os.path.exists(images_dir):
-        os.makedirs(images_dir)
-        print(f"Created images directory: {images_dir}")
+    # Create a temporary directory for storing images before organizing
+    temp_images_dir = os.path.join(RESULTS_DIR, "temp_images")
+    if not os.path.exists(temp_images_dir):
+        os.makedirs(temp_images_dir)
+        
+    # Create an 'unknown' directory for results that don't match anyone
+    unknown_dir = os.path.join(RESULTS_DIR, "unknown")
+    if not os.path.exists(unknown_dir):
+        os.makedirs(unknown_dir)
+        
+    unknown_images_dir = os.path.join(unknown_dir, "images")
+    if not os.path.exists(unknown_images_dir):
+        os.makedirs(unknown_images_dir)
+        
+    return temp_images_dir
 
 def load_processed_faces():
     """Load the list of already processed face files"""
@@ -280,13 +290,14 @@ def get_identity_sources(url: str) -> List[str]:
     
     return sources
 
-def analyze_search_result(result: Dict[str, Any], result_index: int) -> Dict[str, Any]:
+def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images_dir: str = None) -> Dict[str, Any]:
     """
     Analyze a single search result to extract identity information
     
     Args:
         result: Single result from FaceCheckID
         result_index: Index number of this result
+        temp_images_dir: Directory to temporarily save images (will be moved later)
         
     Returns:
         Dictionary with enriched information
@@ -299,10 +310,17 @@ def analyze_search_result(result: Dict[str, Any], result_index: int) -> Dict[str
     thumbnail_path = None
     
     if base64_str:
+        # If no specific directory is provided, use the default temporary directory
+        if not temp_images_dir:
+            # Make sure the images directory exists
+            temp_images_dir = os.path.join(RESULTS_DIR, "temp_images")
+            if not os.path.exists(temp_images_dir):
+                os.makedirs(temp_images_dir)
+            
         thumbnail_filename = f"result_{result_index}_{result.get('guid', 'unknown')}.webp"
-        thumbnail_path = os.path.join(RESULTS_DIR, "images", thumbnail_filename)
+        thumbnail_path = os.path.join(temp_images_dir, thumbnail_filename)
         if save_thumbnail_from_base64(base64_str, thumbnail_path):
-            print(f"Saved thumbnail image to {thumbnail_path}")
+            print(f"Saved temporary thumbnail image")
     
     # Get identity sources
     sources = get_identity_sources(url)
@@ -351,77 +369,12 @@ def process_faces(faces_dir, limit=None, force=False, timeout=300):
         print(f"\n[{i}/{len(unprocessed_files)}] Processing: {os.path.basename(image_file)}")
         
         try:
-            # Search for the face with timeout
-            error, search_results = search_by_face(image_file, timeout=timeout)
+            # Process single face with the new method
+            success = process_single_face(image_file, timeout=timeout)
             
-            if search_results:
-                # Print the search results summary
-                print(f"Found {len(search_results)} potential matches:")
-                
-                # Process each result to get identity information
-                identity_analyses = []
-                
-                for j, result in enumerate(search_results[:5], 1):  # Process top 5 results
-                    score = result['score']
-                    url = result['url']
-                    
-                    print(f"\n  {j}. Score: {score} | URL: {url}")
-                    print(f"  Analyzing source to determine identity...")
-                    
-                    # Analyze this result
-                    analysis = analyze_search_result(result, j)
-                    identity_analyses.append(analysis)
-                    
-                    # Print scraped information if available
-                    if analysis.get('scraped_data') and analysis['scraped_data'].get('person_info'):
-                        person_info = analysis['scraped_data']['person_info']
-                        # Handle different possible data structures
-                        if isinstance(person_info, dict):
-                            if 'full_name' in person_info:
-                                print(f"  → Name: {person_info['full_name']}")
-                            elif 'name' in person_info:
-                                print(f"  → Name: {person_info['name']}")
-                                
-                            if 'profession' in person_info:
-                                print(f"  → Profession: {person_info['profession']}")
-                            elif 'occupation' in person_info:
-                                print(f"  → Profession: {person_info['occupation']}")
-                        else:
-                            # If it's a string or other non-dict format
-                            print(f"  → Info: {str(person_info)[:100]}")
-                    
-                    print(f"  → Source type: {analysis['source_type']}")
-                
-                if len(search_results) > 5:
-                    print(f"\n  ... and {len(search_results) - 5} more results")
-                    
-                # Save the results with enhanced information
-                results_data = {
-                    "source_image": image_file,
-                    "search_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-                    "original_results": search_results,
-                    "identity_analyses": identity_analyses
-                }
-                
-                # Generate a filename based on the original image
-                base_filename = os.path.basename(image_file).replace(".jpg", "")
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                results_file = os.path.join(RESULTS_DIR, f"{base_filename}_results_{timestamp}.json")
-                
-                # Save to file
-                try:
-                    with open(results_file, 'w') as f:
-                        json.dump(results_data, f, indent=2)
-                    print(f"\nResults saved to {results_file}")
-                except Exception as e:
-                    print(f"Error saving results: {e}")
-            else:
-                print(f"Search failed: {error}")
+            if not success:
+                print(f"Failed to process: {image_file}")
             
-            # Mark as processed
-            processed_faces.append(image_file)
-            save_processed_faces(processed_faces)
-        
         except KeyboardInterrupt:
             print("\nProcess interrupted by user. Saving progress...")
             # Save progress before exiting
@@ -431,8 +384,192 @@ def process_faces(faces_dir, limit=None, force=False, timeout=300):
             print("You can resume processing later.")
             raise
 
-def main():
-    """Main function to run the face upload and search tool"""
+def process_single_face(image_file, timeout=300):
+    """
+    Process a single face image
+    
+    Args:
+        image_file: Path to the face image file
+        timeout: Maximum time to wait for search results
+        
+    Returns:
+        True if processing was successful, False otherwise
+    """
+    if not os.path.exists(image_file):
+        print(f"Error: Face file '{image_file}' does not exist!")
+        return False
+    
+    print(f"Processing: {os.path.basename(image_file)}")
+    
+    try:
+        # Set up directories and get temp directory
+        temp_images_dir = setup_directories()
+        
+        # Search for the face with timeout
+        error, search_results = search_by_face(image_file, timeout=timeout)
+        
+        if search_results:
+            # Print the search results summary
+            print(f"Found {len(search_results)} potential matches")
+            
+            # Process each result to get identity information
+            identity_analyses = []
+            
+            for j, result in enumerate(search_results[:5], 1):  # Process top 5 results
+                # Analyze this result with temp directory
+                analysis = analyze_search_result(result, j, temp_images_dir)
+                identity_analyses.append(analysis)
+            
+            # Save the results with enhanced information
+            results_data = {
+                "source_image": image_file,
+                "search_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "original_results": search_results,
+                "identity_analyses": identity_analyses
+            }
+            
+            # Extract the basename without extension and path - this will be our directory name
+            base_image_name = os.path.basename(image_file)
+            base_image_name = os.path.splitext(base_image_name)[0]  # Remove extension
+            
+            # Create a simple directory based only on the input file name
+            person_dir = os.path.join(RESULTS_DIR, base_image_name)
+            if not os.path.exists(person_dir):
+                os.makedirs(person_dir)
+                print(f"Created results directory: {person_dir}")
+            
+            # Create an images subfolder for the results
+            images_dir = os.path.join(person_dir, "images")
+            if not os.path.exists(images_dir):
+                os.makedirs(images_dir)
+            
+            # Move result thumbnails to the folder
+            for i, analysis in enumerate(identity_analyses):
+                if analysis.get('thumbnail_path'):
+                    # Copy the thumbnail to the folder
+                    original_thumb = analysis['thumbnail_path']
+                    if os.path.exists(original_thumb):
+                        new_thumb_name = f"match_{i+1}_{os.path.basename(original_thumb)}"
+                        new_thumb_path = os.path.join(images_dir, new_thumb_name)
+                        try:
+                            import shutil
+                            shutil.copy2(original_thumb, new_thumb_path)
+                            # Update the path in the analysis
+                            analysis['thumbnail_path'] = new_thumb_path
+                        except Exception as e:
+                            print(f"Error copying thumbnail: {e}")
+            
+            # Generate result filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_file = os.path.join(person_dir, f"results_{timestamp}.json")
+            
+            # Save to file
+            with open(results_file, 'w') as f:
+                json.dump(results_data, f, indent=2)
+            print(f"Results saved to {results_file} (Directory: {base_image_name})")
+            
+            # Mark as processed
+            processed_faces = load_processed_faces()
+            if image_file not in processed_faces:
+                processed_faces.append(image_file)
+                save_processed_faces(processed_faces)
+            
+            # Clean up temp directory if it exists
+            try:
+                import shutil
+                if os.path.exists(temp_images_dir):
+                    shutil.rmtree(temp_images_dir)
+                    # Recreate it for future use
+                    os.makedirs(temp_images_dir)
+            except Exception as e:
+                print(f"Warning: Could not clean up temporary files: {e}")
+                
+            return True
+        else:
+            print(f"Search failed: {error}")
+            return False
+    
+    except Exception as e:
+        print(f"Error processing face {os.path.basename(image_file)}: {e}")
+        return False
+
+def queue_worker(face_queue, shutdown_event=None, timeout=300):
+    """
+    Worker function that processes faces from a queue
+    
+    Args:
+        face_queue: Queue to get face images from
+        shutdown_event: Event to signal shutdown
+        timeout: Search timeout in seconds
+    """
+    print(f"[FACEUPLOAD] Face processing worker started")
+    print(f"[FACEUPLOAD] Worker ready to process faces")
+    
+    # Set up necessary directories
+    setup_directories()
+    
+    try:
+        while True:
+            # Check if shutdown is requested and queue is empty
+            if shutdown_event and shutdown_event.is_set() and face_queue.is_empty():
+                print("[FACEUPLOAD] Shutdown requested and queue empty, stopping worker...")
+                break
+                
+            try:
+                # Get a face from the queue (with timeout to check for shutdown)
+                print("[FACEUPLOAD] Checking queue for faces...")
+                face_path = face_queue.get(block=True, timeout=2.0)
+                
+                # Process the face
+                try:
+                    print(f"[FACEUPLOAD] Processing face from queue: {os.path.basename(face_path)}")
+                    success = process_single_face(face_path, timeout=timeout)
+                    
+                    # Mark the task as done regardless of success
+                    face_queue.task_done()
+                    
+                    if success:
+                        print(f"[FACEUPLOAD] Successfully processed: {os.path.basename(face_path)}")
+                    else:
+                        print(f"[FACEUPLOAD] Failed to process: {os.path.basename(face_path)}")
+                        
+                except Exception as e:
+                    print(f"[FACEUPLOAD] Error processing face from queue: {e}")
+                    face_queue.task_done()
+            except queue.Empty:
+                # Queue.get timed out, which is expected for the polling loop
+                print("[FACEUPLOAD] No faces in queue, waiting...")
+                # Sleep a bit longer to reduce log spam
+                time.sleep(2.0)
+            
+    except KeyboardInterrupt:
+        print("Worker interrupted by user")
+        
+    except Exception as e:
+        print(f"Worker encountered an error: {e}")
+        
+    finally:
+        print("Face processing worker stopped")
+
+def main(face_queue=None, shutdown_event=None):
+    """
+    Main function to run the face upload and search tool
+    
+    Args:
+        face_queue: Optional queue to get faces from (for worker mode)
+        shutdown_event: Optional event to signal shutdown
+    """
+    # Skip argument parsing if we're called with a queue (worker mode)
+    if face_queue:
+        print(f"Running in worker mode with provided queue (Queue object type: {type(face_queue).__name__})")
+        print(f"Queue size: {face_queue.queue.qsize()}")
+        # Set up necessary directories
+        setup_directories()
+        # Start the worker
+        queue_worker(face_queue, shutdown_event, timeout=300)
+        return
+
+    # Only parse arguments when running standalone
     parser = argparse.ArgumentParser(description='Upload detected faces to FaceCheckID and search for matches')
     parser.add_argument('--dir', default=DEFAULT_FACES_DIR, help='Directory containing face images')
     parser.add_argument('--limit', type=int, help='Limit the number of faces to process')
@@ -442,6 +579,7 @@ def main():
     parser.add_argument('--timeout', type=int, default=300, help='Search timeout in seconds (default: 300)')
     parser.add_argument('--skip-scrape', action='store_true', help='Skip web scraping even if Firecrawl is available')
     parser.add_argument('--file', help='Process a specific face file instead of all unprocessed faces')
+    parser.add_argument('--worker', action='store_true', help='Run in worker mode (requires parent process)')
     args = parser.parse_args()
     
     # Set up the API tokens
@@ -459,39 +597,18 @@ def main():
     # Set up necessary directories
     setup_directories()
     
+    # If worker mode requested but no queue provided, error out
+    if args.worker:
+        print("Worker mode requested but no queue provided. This mode should only be used from controller.py")
+        return
+    
     # Handle single file processing if specified
     if args.file:
         if not os.path.exists(args.file):
             print(f"Error: Specified file '{args.file}' does not exist!")
             return
         
-        print(f"Processing single file: {args.file}")
-        
-        error, search_results = search_by_face(args.file, timeout=args.timeout)
-        if search_results:
-            # Process and save results for this single file
-            identity_analyses = []
-            for j, result in enumerate(search_results[:5], 1):
-                analysis = analyze_search_result(result, j)
-                identity_analyses.append(analysis)
-                
-            results_data = {
-                "source_image": args.file,
-                "search_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-                "original_results": search_results,
-                "identity_analyses": identity_analyses
-            }
-            
-            base_filename = os.path.basename(args.file).replace(".jpg", "").replace(".jpeg", "").replace(".png", "")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            results_file = os.path.join(RESULTS_DIR, f"{base_filename}_results_{timestamp}.json")
-            
-            with open(results_file, 'w') as f:
-                json.dump(results_data, f, indent=2)
-            print(f"\nResults saved to {results_file}")
-        else:
-            print(f"Search failed: {error}")
-        
+        process_single_face(args.file, args.timeout)
         return
     
     # Check if faces directory exists for batch processing
@@ -501,10 +618,11 @@ def main():
         return
     
     # Process face images
-    process_faces(args.dir, args.limit, args.force)
+    process_faces(args.dir, args.limit, args.force, args.timeout)
     
     print("\nProcessing complete!")
     print(f"Results have been saved to the '{RESULTS_DIR}' directory.")
 
 if __name__ == "__main__":
-    main()
+    # When run directly, no queue is provided
+    main(face_queue=None, shutdown_event=None)
