@@ -276,14 +276,14 @@ def is_new_face(face_encoding, tolerance=0.6):
     # If the smallest distance is greater than tolerance, it's a new face
     return min(face_distances) > tolerance
 
-def save_face(frame, face_location, face_encoding, region_offset=(0, 0)):
+def save_face(frame, face_location, face_encoding, region_offset=(0, 0), face_processor=None):
     """Save a detected face to disk if it's new"""
     global known_face_encodings
     
     # Check if this is a new face
     if not is_new_face(face_encoding):
-        print("Skipping face - already captured previously")
-        return
+        # Don't print message for skipped faces - too noisy
+        return None
     
     # Extract face coordinates
     top, right, bottom, left = face_location
@@ -315,8 +315,24 @@ def save_face(frame, face_location, face_encoding, region_offset=(0, 0)):
     # Save the updated known faces list
     with open(face_encodings_file, 'wb') as f:
         pickle.dump(known_face_encodings, f)
+    
+    # Process the face if a processor is provided
+    if face_processor:
+        try:
+            face_processor.process_face(filename)
+        except Exception as e:
+            print(f"Error processing face: {str(e)}")
+    
+    return filename
 
-def main():
+def main(face_processor=None, shutdown_event=None):
+    """
+    Main face recognition function
+    
+    Args:
+        face_processor: Optional processor for handling detected faces
+        shutdown_event: Optional event to signal when the system should shut down
+    """
     # Get the region to monitor
     monitor_region = get_monitor_region()
     
@@ -332,11 +348,20 @@ def main():
     print(f"- Currently tracking {len(known_face_encodings)} unique faces")
     print("- Press 'q' in the monitoring window to quit")
     
+    if face_processor:
+        print(f"- Detected faces will be processed automatically")
+    
     try:
         # Create a named window for monitoring
         cv2.namedWindow("Face Monitoring", cv2.WINDOW_NORMAL)
         
-        while True:
+        running = True
+        while running:
+            # Check if shutdown was requested
+            if shutdown_event and shutdown_event.is_set():
+                print("Shutdown requested, stopping face detection...")
+                break
+                
             # Capture screen image (just the selected region)
             frame = get_screen_image(monitor_region)
             
@@ -345,6 +370,10 @@ def main():
             
             # Process every other frame to save resources
             global process_this_frame
+            
+            # Initialize scaled_face_locations for the display
+            scaled_face_locations = []
+            
             if process_this_frame:
                 # Find all faces in the current frame
                 face_locations = face_recognition.face_locations(small_frame)
@@ -356,7 +385,7 @@ def main():
                 
                 # Process each detected face
                 for (face_location, face_encoding) in zip(scaled_face_locations, face_encodings):
-                    save_face(frame, face_location, face_encoding, (x_start, y_start))
+                    save_face(frame, face_location, face_encoding, (x_start, y_start), face_processor)
             
             process_this_frame = not process_this_frame
             
@@ -366,10 +395,19 @@ def main():
                 cv2.rectangle(debug_frame, (left, top), (right, bottom), (0, 255, 0), 2)
             
             # Add status information
-            status_text = f"Monitoring region: {x_end-x_start}x{y_end-y_start} pixels | Faces found: {len(face_locations)}"
+            status_text = f"Monitoring region: {x_end-x_start}x{y_end-y_start} pixels | Faces found: {len(scaled_face_locations)}"
             known_faces_text = f"Unique faces in database: {len(known_face_encodings)}"
+            
+            # Add processor status if available
+            processor_text = ""
+            if face_processor:
+                processor_text = "Face processing: Enabled"
+            
             cv2.putText(debug_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.putText(debug_frame, known_faces_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            if processor_text:
+                cv2.putText(debug_frame, processor_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
             # Resize for display if too large
             h, w = debug_frame.shape[:2]
@@ -380,8 +418,17 @@ def main():
             
             cv2.imshow('Face Monitoring', debug_frame)
             
-            # Check for quit command
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Check for quit command - MUST use cv2.waitKey(1) to catch keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("\n[FOTOREC] Quit requested via 'q' key, shutting down...")
+                running = False
+                # Also set shutdown event if available
+                if shutdown_event:
+                    print("[FOTOREC] Notifying controller of shutdown request...")
+                    shutdown_event.set()
+                    
+                # Break out of the loop immediately to respond to quit
                 break
                 
             # Short delay to reduce CPU usage
@@ -395,6 +442,9 @@ def main():
         print(f"\nFace monitoring stopped.")
         print(f"- Detected faces saved in {os.path.abspath(save_dir)}")
         print(f"- Database contains {len(known_face_encodings)} unique faces")
+        
+        # No queue signals needed - direct processing
 
 if __name__ == "__main__":
-    main()
+    # When run directly, no processor is provided
+    main(face_processor=None, shutdown_event=None)
