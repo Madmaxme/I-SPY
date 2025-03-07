@@ -7,6 +7,7 @@ import signal
 import sys
 import FotoRec
 import FaceUpload
+from bio_integration import integrate_with_controller
 
 # Set up logging
 logging.basicConfig(
@@ -55,6 +56,18 @@ class EyeSpyController:
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+        
+        # Initialize bio generation if available
+        try:
+            # Check if OPENAI_API_KEY is set in environment
+            if not os.getenv("OPENAI_API_KEY"):
+                print("[CONTROLLER] Warning: OPENAI_API_KEY not set. Bio generation will be disabled.")
+            else:
+                # Integrate bio generation
+                integrate_with_controller()
+                print("[CONTROLLER] Bio generation enabled and integrated.")
+        except Exception as e:
+            print(f"[CONTROLLER] Error initializing bio generation: {e}")
         
         logger.info("EyeSpy controller initialized")
     
