@@ -175,15 +175,40 @@ def save_thumbnail_from_base64(base64_str, filename):
         print(f"Error saving thumbnail: {e}")
         return False
 
-def scrape_with_firecrawl(url: str) -> Optional[Dict[str, Any]]:
+def collect_fallback_urls(search_results: List[Dict], primary_index: int) -> List[str]:
     """
-    Scrape a URL using Firecrawl to extract information about the person
+    Collect fallback URLs from search results that aren't the primary one
     
     Args:
-        url: The URL to scrape
-    
+        search_results: List of search results from FaceCheckID
+        primary_index: Index of the primary result being processed
+        
     Returns:
-        Dictionary containing the scraped information or None if scraping failed
+        List of fallback URLs to try
+    """
+    fallback_urls = []
+    
+    try:
+        # Skip the primary URL we already tried
+        for i, result in enumerate(search_results):
+            if i != primary_index and result.get('url'):
+                fallback_urls.append(result.get('url'))
+    except Exception as e:
+        print(f"Error collecting fallback URLs: {e}")
+    
+    return fallback_urls
+
+def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Scrape a URL using Firecrawl to extract information about the person.
+    If scraping fails and fallback_urls are provided, attempts to scrape those.
+    
+    Args:
+        url: The primary URL to scrape
+        fallback_urls: A list of alternative URLs to try if the primary fails
+        
+    Returns:
+        Dictionary containing the scraped information or None if all scraping failed
     """
     global FIRECRAWL_AVAILABLE
     
@@ -192,65 +217,125 @@ def scrape_with_firecrawl(url: str) -> Optional[Dict[str, Any]]:
         return None
     
     # Skip if the API key isn't set
-    if FIRECRAWL_API_KEY == 'YOUR_FIRECRAWL_API_KEY':
+    if not FIRECRAWL_API_KEY or FIRECRAWL_API_KEY == 'YOUR_FIRECRAWL_API_KEY':
         print("Firecrawl API key not set. Skipping web scraping.")
         return None
     
-    try:
-        # Initialize Firecrawl
-        firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-        
-        # Define the extraction prompt rather than using a schema
-        # This approach is more flexible and works better with Firecrawl
-        extraction_prompt = """
-        Extract the following information about the person featured in this page:
-        - Full name of the person
-        - Description or bio
-        - Job, role, or occupation
-        - Location information
-        - Social media handles or usernames
-        - Age or birthdate information
-        - Organizations or companies they're affiliated with
-        
-        If the page is a social media profile, extract the profile owner's information.
-        If the page is a news article or blog post, extract information about the main person featured.
-        If certain information isn't available, that's okay.
-        """
-        
-        # Parameters for scraping with prompt-based extraction
-        params = {
-            'formats': ['json', 'markdown'],
-            'jsonOptions': {
-                'prompt': extraction_prompt
-            }
-        }
-        
-        print(f"Scraping {url} with Firecrawl...")
-        result = firecrawl_app.scrape_url(url, params)
-        
-        if result and 'json' in result:
-            print("Successfully scraped person information")
-            return {
-                'person_info': result.get('json', {}),
-                'page_content': result.get('markdown', ''),
-                'metadata': result.get('metadata', {})
-            }
-        else:
-            print("No structured data returned from Firecrawl")
-            return None
+    # Initialize a list of URLs to try, starting with the primary URL
+    urls_to_try = [url]
+    
+    # Add any fallback URLs if provided
+    if fallback_urls:
+        urls_to_try.extend(fallback_urls)
+    
+    # Try each URL in sequence until one succeeds
+    for current_url in urls_to_try:
+        try:
+            # Skip empty or invalid URLs
+            if not current_url or not current_url.startswith(('http://', 'https://')):
+                continue
+                
+            print(f"Scraping {current_url} with Firecrawl...")
             
-    except Exception as e:
-        print(f"Error scraping with Firecrawl: {e}")
-        return None
+            # Initialize Firecrawl
+            firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
+            
+            # Define the extraction prompt rather than using a schema
+            # This approach is more flexible and works better with Firecrawl
+            extraction_prompt = """
+            Extract the following information about the person featured in this page:
+            - Full name of the person
+            - Description or bio
+            - Job, role, or occupation
+            - Location information
+            - Social media handles or usernames
+            - Age or birthdate information
+            - Organizations or companies they're affiliated with
+            
+            If the page is a social media profile, extract the profile owner's information.
+            If the page is a news article or blog post, extract information about the main person featured.
+            If certain information isn't available, that's okay.
+            """
+            
+            # Parameters for scraping with prompt-based extraction
+            params = {
+                'formats': ['json', 'markdown'],
+                'jsonOptions': {
+                    'prompt': extraction_prompt
+                }
+            }
+            
+            result = firecrawl_app.scrape_url(current_url, params)
+            
+            if result and 'json' in result and result['json']:
+                print(f"Successfully scraped person information from {current_url}")
+                return {
+                    'person_info': result.get('json', {}),
+                    'page_content': result.get('markdown', ''),
+                    'metadata': result.get('metadata', {}),
+                    'source_url': current_url  # Track which URL was actually used
+                }
+            else:
+                print(f"No structured data returned from Firecrawl for {current_url}, trying next URL if available")
+                
+        except Exception as e:
+            print(f"Error scraping {current_url} with Firecrawl: {e}")
+            # Continue to the next URL
+    
+    # If we get here, all URLs failed
+    print("All scraping attempts failed")
+    return None
 
-def extract_domain(url: str) -> str:
-    """Extract the main domain from a URL"""
-    try:
-        parsed = urllib.parse.urlparse(url)
-        domain = parsed.netloc
-        return domain
-    except:
-        return url
+def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images_dir: str = None, fallback_urls: List[str] = None) -> Dict[str, Any]:
+    """
+    Analyze a single search result to extract identity information
+    
+    Args:
+        result: Single result from FaceCheckID
+        result_index: Index number of this result
+        temp_images_dir: Directory to temporarily save images (will be moved later)
+        fallback_urls: A list of fallback URLs to try if scraping the primary URL fails
+        
+    Returns:
+        Dictionary with enriched information
+    """
+    url = result.get('url', '')
+    score = result.get('score', 0)
+    
+    # Save the thumbnail image
+    base64_str = result.get('base64', '')
+    thumbnail_path = None
+    
+    if base64_str:
+        # If no specific directory is provided, use the default temporary directory
+        if not temp_images_dir:
+            # Make sure the images directory exists
+            temp_images_dir = os.path.join(RESULTS_DIR, "temp_images")
+            if not os.path.exists(temp_images_dir):
+                os.makedirs(temp_images_dir)
+            
+        thumbnail_filename = f"result_{result_index}_{result.get('guid', 'unknown')}.webp"
+        thumbnail_path = os.path.join(temp_images_dir, thumbnail_filename)
+        if save_thumbnail_from_base64(base64_str, thumbnail_path):
+            print(f"Saved temporary thumbnail image")
+    
+    # Get identity sources
+    sources = get_identity_sources(url)
+    source_type = sources[0] if sources else "Unknown source"
+    
+    # Scrape the URL if Firecrawl is available, with fallbacks
+    scraped_data = scrape_with_firecrawl(url, fallback_urls)
+    
+    # Combine all information
+    analysis = {
+        'url': url,
+        'score': score,
+        'source_type': source_type,
+        'thumbnail_path': thumbnail_path,
+        'scraped_data': scraped_data
+    }
+    
+    return analysis
 
 def get_identity_sources(url: str) -> List[str]:
     """
@@ -290,99 +375,14 @@ def get_identity_sources(url: str) -> List[str]:
     
     return sources
 
-def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images_dir: str = None) -> Dict[str, Any]:
-    """
-    Analyze a single search result to extract identity information
-    
-    Args:
-        result: Single result from FaceCheckID
-        result_index: Index number of this result
-        temp_images_dir: Directory to temporarily save images (will be moved later)
-        
-    Returns:
-        Dictionary with enriched information
-    """
-    url = result.get('url', '')
-    score = result.get('score', 0)
-    
-    # Save the thumbnail image
-    base64_str = result.get('base64', '')
-    thumbnail_path = None
-    
-    if base64_str:
-        # If no specific directory is provided, use the default temporary directory
-        if not temp_images_dir:
-            # Make sure the images directory exists
-            temp_images_dir = os.path.join(RESULTS_DIR, "temp_images")
-            if not os.path.exists(temp_images_dir):
-                os.makedirs(temp_images_dir)
-            
-        thumbnail_filename = f"result_{result_index}_{result.get('guid', 'unknown')}.webp"
-        thumbnail_path = os.path.join(temp_images_dir, thumbnail_filename)
-        if save_thumbnail_from_base64(base64_str, thumbnail_path):
-            print(f"Saved temporary thumbnail image")
-    
-    # Get identity sources
-    sources = get_identity_sources(url)
-    source_type = sources[0] if sources else "Unknown source"
-    
-    # Scrape the URL if Firecrawl is available
-    scraped_data = scrape_with_firecrawl(url)
-    
-    # Combine all information
-    analysis = {
-        'url': url,
-        'score': score,
-        'source_type': source_type,
-        'thumbnail_path': thumbnail_path,
-        'scraped_data': scraped_data
-    }
-    
-    return analysis
-
-def process_faces(faces_dir, limit=None, force=False, timeout=300):
-    """Process face images and search for matches
-    
-    Args:
-        faces_dir: Directory containing face images
-        limit: Maximum number of faces to process
-        force: Process all faces even if previously processed
-        timeout: Maximum time in seconds to wait for each search
-    """
-    processed_faces = [] if force else load_processed_faces()
-    
-    # Get unprocessed face images
-    unprocessed_files = get_unprocessed_faces(faces_dir, processed_faces)
-    
-    if not unprocessed_files:
-        print("No new faces to process.")
-        return
-    
-    print(f"Found {len(unprocessed_files)} unprocessed face images.")
-    
-    # Apply limit if specified
-    if limit and limit > 0:
-        unprocessed_files = unprocessed_files[:limit]
-        print(f"Processing first {limit} images...")
-    
-    for i, image_file in enumerate(unprocessed_files, 1):
-        print(f"\n[{i}/{len(unprocessed_files)}] Processing: {os.path.basename(image_file)}")
-        
-        try:
-            # Process single face with the new method
-            success = process_single_face(image_file, timeout=timeout)
-            
-            if not success:
-                print(f"Failed to process: {image_file}")
-            
-        except KeyboardInterrupt:
-            print("\nProcess interrupted by user. Saving progress...")
-            # Save progress before exiting
-            if image_file not in processed_faces:
-                processed_faces.append(image_file)
-                save_processed_faces(processed_faces)
-            print("You can resume processing later.")
-            raise
+def extract_domain(url: str) -> str:
+    """Extract the main domain from a URL"""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc
+        return domain
+    except:
+        return url
 
 def process_single_face(image_file, timeout=300):
     """
@@ -415,9 +415,13 @@ def process_single_face(image_file, timeout=300):
             # Process each result to get identity information
             identity_analyses = []
             
+            # Process top 5 results (original limit) with fallback functionality
             for j, result in enumerate(search_results[:5], 1):  # Process top 5 results
-                # Analyze this result with temp directory
-                analysis = analyze_search_result(result, j, temp_images_dir)
+                # Collect fallback URLs from other results
+                fallback_urls = collect_fallback_urls(search_results, j-1)
+                
+                # Analyze this result with temp directory and fallback URLs
+                analysis = analyze_search_result(result, j, temp_images_dir, fallback_urls)
                 identity_analyses.append(analysis)
             
             # Save the results with enhanced information
@@ -492,6 +496,50 @@ def process_single_face(image_file, timeout=300):
     except Exception as e:
         print(f"Error processing face {os.path.basename(image_file)}: {e}")
         return False
+
+def process_faces(faces_dir, limit=None, force=False, timeout=300):
+    """Process face images and search for matches
+    
+    Args:
+        faces_dir: Directory containing face images
+        limit: Maximum number of faces to process
+        force: Process all faces even if previously processed
+        timeout: Maximum time in seconds to wait for each search
+    """
+    processed_faces = [] if force else load_processed_faces()
+    
+    # Get unprocessed face images
+    unprocessed_files = get_unprocessed_faces(faces_dir, processed_faces)
+    
+    if not unprocessed_files:
+        print("No new faces to process.")
+        return
+    
+    print(f"Found {len(unprocessed_files)} unprocessed face images.")
+    
+    # Apply limit if specified
+    if limit and limit > 0:
+        unprocessed_files = unprocessed_files[:limit]
+        print(f"Processing first {limit} images...")
+    
+    for i, image_file in enumerate(unprocessed_files, 1):
+        print(f"\n[{i}/{len(unprocessed_files)}] Processing: {os.path.basename(image_file)}")
+        
+        try:
+            # Process single face with the new method
+            success = process_single_face(image_file, timeout=timeout)
+            
+            if not success:
+                print(f"Failed to process: {image_file}")
+            
+        except KeyboardInterrupt:
+            print("\nProcess interrupted by user. Saving progress...")
+            # Save progress before exiting
+            if image_file not in processed_faces:
+                processed_faces.append(image_file)
+                save_processed_faces(processed_faces)
+            print("You can resume processing later.")
+            raise
 
 def queue_worker(face_queue, shutdown_event=None, timeout=300):
     """
