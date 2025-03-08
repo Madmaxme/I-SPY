@@ -8,6 +8,7 @@ import os
 import time
 import threading
 from BioGenerator import BioGenerator
+from RecordChecker import RecordChecker
 
 def add_bio_generator_to_faceupload():
     """
@@ -39,7 +40,7 @@ def add_bio_generator_to_faceupload():
                     if os.path.exists(person_dir):
                         # Run bio generation in a separate thread to not block
                         threading.Thread(
-                            target=generate_bio_for_directory,
+                            target=process_directory_with_records_then_bio,
                             args=(person_dir,),
                             daemon=True
                         ).start()
@@ -59,9 +60,9 @@ def add_bio_generator_to_faceupload():
         return False
 
 
-def generate_bio_for_directory(person_dir):
+def process_directory_with_records_then_bio(person_dir):
     """
-    Generate a bio for a person directory
+    Process a directory with records search first, then bio generation
     This function is called in a separate thread after face search completes
     
     Args:
@@ -71,12 +72,21 @@ def generate_bio_for_directory(person_dir):
         # Small delay to make sure the results file is fully written
         time.sleep(2)
         
+        print(f"[BIO_INTEGRATION] Starting processing for: {person_dir}")
+        
+        # Step 1: Check records first
+        print(f"[BIO_INTEGRATION] Starting record checking for: {person_dir}")
+        record_checker = RecordChecker()
+        record_json = record_checker.process_result_directory(person_dir)
+        
+        if record_json:
+            print(f"[BIO_INTEGRATION] Record checking complete, added to: {record_json}")
+        else:
+            print(f"[BIO_INTEGRATION] Record checking failed or no records found")
+        
+        # Step 2: Generate bio after record checking
         print(f"[BIO_INTEGRATION] Starting bio generation for: {person_dir}")
-        
-        # Initialize the bio generator
         generator = BioGenerator()
-        
-        # Process the directory
         bio_file = generator.process_result_directory(person_dir)
         
         if bio_file:
@@ -85,7 +95,8 @@ def generate_bio_for_directory(person_dir):
             print(f"[BIO_INTEGRATION] Bio generation failed for: {person_dir}")
     
     except Exception as e:
-        print(f"[BIO_INTEGRATION] Error generating bio: {e}")
+        print(f"[BIO_INTEGRATION] Error in combined processing: {e}")
+        traceback.print_exc()
 
 
 # Patch to enable direct integration into the controller

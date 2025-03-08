@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import time
 import threading
@@ -7,7 +6,8 @@ import signal
 import sys
 import FotoRec
 import FaceUpload
-from bio_integration import integrate_with_controller
+from bio_integration import integrate_with_controller as integrate_bio
+from record_integration import integrate_records_with_controller as integrate_records
 
 # Set up logging
 logging.basicConfig(
@@ -57,6 +57,18 @@ class EyeSpyController:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         
+        # Initialize components
+        self._initialize_components()
+        
+        logger.info("EyeSpy controller initialized")
+    
+    def _initialize_components(self):
+        """Initialize all system components"""
+        components_status = {
+            "bio_generation": False,
+            "record_checking": False
+        }
+        
         # Initialize bio generation if available
         try:
             # Check if OPENAI_API_KEY is set in environment
@@ -64,12 +76,29 @@ class EyeSpyController:
                 print("[CONTROLLER] Warning: OPENAI_API_KEY not set. Bio generation will be disabled.")
             else:
                 # Integrate bio generation
-                integrate_with_controller()
+                components_status["bio_generation"] = integrate_bio()
                 print("[CONTROLLER] Bio generation enabled and integrated.")
         except Exception as e:
             print(f"[CONTROLLER] Error initializing bio generation: {e}")
         
-        logger.info("EyeSpy controller initialized")
+        # Initialize record checking if available
+        try:
+            # Check if RECORDS_API_KEY is set in environment
+            if not os.getenv("RECORDS_API_KEY"):
+                print("[CONTROLLER] Warning: RECORDS_API_KEY not set. Record checking will be disabled.")
+            else:
+                # Integrate record checking
+                components_status["record_checking"] = integrate_records()
+                print("[CONTROLLER] Record checking enabled and integrated.")
+        except Exception as e:
+            print(f"[CONTROLLER] Error initializing record checking: {e}")
+        
+        # Print component status summary
+        print("\n[CONTROLLER] System Components Status:")
+        for component, status in components_status.items():
+            status_str = "ENABLED" if status else "DISABLED"
+            print(f"  - {component}: {status_str}")
+        print("")
     
     def signal_handler(self, sig, frame):
         """Handle termination signals"""
