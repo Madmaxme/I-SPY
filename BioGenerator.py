@@ -148,8 +148,17 @@ class BioGenerator:
         
         return entry
     
-    def prepare_prompt(self, identity_analyses):
-        """Prepare the prompt for OpenAI API using the first-person-only approach"""
+    def prepare_prompt(self, identity_analyses, record_analyses=None):
+        """
+        Prepare the prompt for OpenAI API using identity and record analyses
+        
+        Args:
+            identity_analyses: List of identity analysis results from face search
+            record_analyses: Optional record analysis data from RecordChecker
+        
+        Returns:
+            Formatted prompt string
+        """
         # Get data for only the first person and their matches
         person_data = self.prepare_summarized_data(identity_analyses)
         
@@ -180,23 +189,48 @@ class BioGenerator:
         3. Current and past organizations/roles
         4. Notable achievements/work
         5. Location information
-        6. Any other relevant personal or professional details
+        6. Contact information (if available)
+        7. Personal relationships and connections (if available)
+        8. Any other relevant personal or professional details
         
         Format the report for mobile viewing with clear sections. Focus on factual information and present it in a professional tone.
         Do not include any AI-generated disclaimers or notes.
+        """
         
-        Here is the data to analyze (all related to the same person):
+        # Add the identity data section
+        prompt += """
+        
+        Here is the IDENTITY MATCH data to analyze (all related to the same person):
         """
         
         # Add the person-specific data as a JSON string
         prompt += json.dumps(person_data, indent=2)
         
+        # Add record data if available
+        if record_analyses and record_analyses.get("personal_details"):
+            prompt += """
+            
+            Here is additional PERSONAL RECORDS data found for this individual:
+            """
+            
+            # Add the personal details from record search
+            prompt += json.dumps(record_analyses["personal_details"], indent=2)
+        
         # Return the prompt
         return prompt
     
-    def generate_bio(self, identity_analyses):
-        """Generate a bio using OpenAI's API with the name-matching approach"""
-        prompt = self.prepare_prompt(identity_analyses)
+    def generate_bio(self, identity_analyses, record_analyses=None):
+        """
+        Generate a bio using OpenAI's API with both identity and record data
+        
+        Args:
+            identity_analyses: List of identity analysis results
+            record_analyses: Optional record analysis data
+            
+        Returns:
+            Generated biographical text
+        """
+        prompt = self.prepare_prompt(identity_analyses, record_analyses)
         
         try:
             # Estimate token count (rough approximation: 1 token ≈ 4 chars for English text)
@@ -205,9 +239,9 @@ class BioGenerator:
             # Log token estimate
             print(f"[BIOGEN] Estimated prompt tokens: {int(estimated_tokens)}")
             
-            # If still potentially too large, apply emergency fallback
+            # If potentially too large, apply emergency fallback
             if estimated_tokens > 15000:  # Leave room for response
-                print("[BIOGEN] Prompt still too large, using emergency fallback...")
+                print("[BIOGEN] Prompt too large, using emergency fallback...")
                 
                 # Take just the first match data and simplify prompt
                 if identity_analyses and len(identity_analyses) > 0:
@@ -226,6 +260,18 @@ class BioGenerator:
                             critical_info["occupation"] = person_info["occupation"]
                         if "organization" in person_info:
                             critical_info["organization"] = person_info["organization"]
+                    
+                    # Add critical record info if available
+                    if record_analyses and record_analyses.get("personal_details"):
+                        details = record_analyses["personal_details"]
+                        
+                        # Add current address if available
+                        if details.get("addresses") and len(details["addresses"]) > 0:
+                            critical_info["address"] = details["addresses"][0]["address"]
+                        
+                        # Add phone if available
+                        if details.get("phone_numbers") and len(details["phone_numbers"]) > 0:
+                            critical_info["phone"] = details["phone_numbers"][0]["number"]
                     
                     # Very simplified prompt
                     prompt = f"""
@@ -322,13 +368,27 @@ class BioGenerator:
             # Load the data
             data = self.load_data(json_file)
             
-            # Generate the bio
-            bio = self.generate_bio(data["identity_analyses"])
+            # Check if record_analyses is available
+            record_analyses = data.get("record_analyses")
+            if record_analyses:
+                print(f"[BIOGEN] Found record analyses data from {record_analyses.get('provider', 'unknown')}")
+            
+            # Generate the bio with both identity and record data
+            bio = self.generate_bio(data["identity_analyses"], record_analyses)
             
             if bio:
                 # Save the report to the person directory
                 filepath = self.save_report(bio, person_dir, "bio.txt")
                 print(f"[BIOGEN] Bio generated and saved to: {filepath}")
+                
+                # Update the main JSON file to include the bio
+                data["bio_text"] = bio
+                data["bio_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Write the updated JSON back to the file
+                with open(json_file, 'w') as f:
+                    json.dump(data, f, indent=2)
+                
                 return filepath
             else:
                 print("[BIOGEN] Failed to generate bio.")
