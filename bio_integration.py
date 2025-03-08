@@ -7,6 +7,7 @@ This should be imported in FaceUpload.py
 import os
 import time
 import threading
+import traceback
 from BioGenerator import BioGenerator
 from RecordChecker import RecordChecker
 
