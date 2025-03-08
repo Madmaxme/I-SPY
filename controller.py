@@ -65,23 +65,11 @@ class EyeSpyController:
     def _initialize_components(self):
         """Initialize all system components"""
         components_status = {
-            "bio_generation": False,
-            "record_checking": False
+            "record_checking": False,
+            "bio_generation": False
         }
         
-        # Initialize bio generation if available
-        try:
-            # Check if OPENAI_API_KEY is set in environment
-            if not os.getenv("OPENAI_API_KEY"):
-                print("[CONTROLLER] Warning: OPENAI_API_KEY not set. Bio generation will be disabled.")
-            else:
-                # Integrate bio generation
-                components_status["bio_generation"] = integrate_bio()
-                print("[CONTROLLER] Bio generation enabled and integrated.")
-        except Exception as e:
-            print(f"[CONTROLLER] Error initializing bio generation: {e}")
-        
-        # Initialize record checking if available
+        # Initialize record checking FIRST if available
         try:
             # Check if RECORDS_API_KEY is set in environment
             if not os.getenv("RECORDS_API_KEY"):
@@ -92,6 +80,18 @@ class EyeSpyController:
                 print("[CONTROLLER] Record checking enabled and integrated.")
         except Exception as e:
             print(f"[CONTROLLER] Error initializing record checking: {e}")
+        
+        # Initialize bio generation AFTER record checking
+        try:
+            # Check if OPENAI_API_KEY is set in environment
+            if not os.getenv("OPENAI_API_KEY"):
+                print("[CONTROLLER] Warning: OPENAI_API_KEY not set. Bio generation will be disabled.")
+            else:
+                # Integrate bio generation
+                components_status["bio_generation"] = integrate_bio()
+                print("[CONTROLLER] Bio generation enabled and integrated.")
+        except Exception as e:
+            print(f"[CONTROLLER] Error initializing bio generation: {e}")
         
         # Print component status summary
         print("\n[CONTROLLER] System Components Status:")
