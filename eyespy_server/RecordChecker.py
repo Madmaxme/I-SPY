@@ -84,34 +84,51 @@ class RecordChecker:
         if not name:
             return None
             
+        # VERY IMPORTANT: Handle case where name is a list
+        if isinstance(name, list):
+            # If it's a list, process each name and return a list of variations
+            all_variations = []
+            for name_item in name:
+                if isinstance(name_item, str):
+                    variations = self.clean_name_for_search(name_item)
+                    if variations:
+                        if isinstance(variations, list):
+                            all_variations.extend(variations)
+                        else:
+                            all_variations.append(variations)
+            return all_variations if all_variations else None
+            
+        # Now we know name is a string
         # Remove any markdown formatting or prefixes
         prefixes = ["**Full Name and Professional Title:**", "Full Name:", "Name:", "- "]
         for prefix in prefixes:
-            if name.startswith(prefix):
+            if isinstance(name, str) and name.startswith(prefix):
                 name = name.replace(prefix, "").strip()
         
         # Remove any markdown characters
-        name = re.sub(r'\*\*|\*|#|_|-', '', name).strip()
+        if isinstance(name, str):
+            name = re.sub(r'\*\*|\*|#|_|-', '', name).strip()
         
         # Try different name variations for better matching
         name_variations = []
         
-        # Original name
-        name_variations.append(name)
-        
-        # Check if there might be a middle initial/name
-        name_parts = name.split()
-        if len(name_parts) > 2:
-            # Version without middle name/initial
-            first_last = f"{name_parts[0]} {name_parts[-1]}"
-            name_variations.append(first_last)
+        # Add original name
+        if isinstance(name, str):
+            name_variations.append(name)
             
-            # If middle part is just one character (likely an initial)
-            if len(name_parts) == 3 and len(name_parts[1]) == 1:
-                # Try with just initial (no period)
-                name_variations.append(f"{name_parts[0]} {name_parts[1]} {name_parts[2]}")
-                # Try with initial and period
-                name_variations.append(f"{name_parts[0]} {name_parts[1]}. {name_parts[2]}")
+            # Check if there might be a middle initial/name
+            name_parts = name.split()
+            if len(name_parts) > 2:
+                # Version without middle name/initial
+                first_last = f"{name_parts[0]} {name_parts[-1]}"
+                name_variations.append(first_last)
+                
+                # If middle part is just one character (likely an initial)
+                if len(name_parts) == 3 and len(name_parts[1]) == 1:
+                    # Try with just initial (no period)
+                    name_variations.append(f"{name_parts[0]} {name_parts[1]} {name_parts[2]}")
+                    # Try with initial and period
+                    name_variations.append(f"{name_parts[0]} {name_parts[1]}. {name_parts[2]}")
         
         print(f"[RECORDCHECKER] Name variations to try: {name_variations}")
         return name_variations

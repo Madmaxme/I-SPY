@@ -40,70 +40,241 @@ class BioGenerator:
     
     def prepare_summarized_data(self, identity_analyses):
         """
-        Create a focused version of the identity_analyses data by only including 
-        entries that match the name of the first person found.
-        This dramatically reduces token usage.
+        Create a focused version of the identity_analyses data by finding the most frequently
+        occurring name and including entries that match this name.
+        This approach ensures we identify the correct person while reducing token usage.
         """
         if not identity_analyses:
             return []
-            
-        first_person_name = None
-        relevant_data = []
         
-        # Find the first entry with person info to get the reference name
+        # Step 1: Collect all names from all analyses
+        all_names = []
+        name_to_analysis = {}  # Maps names to original analysis objects
+        name_to_score = {}     # Maps names to match scores (for weighting/tiebreaking)
+        name_to_frequency = {} # Maps names to occurrence frequency
+        
         for analysis in identity_analyses:
-            person_name = None
+            match_score = analysis.get("score", 0)
+            name_candidates = []
             
-            # Try to extract a name from person_info
-            if analysis.get("scraped_data") and analysis["scraped_data"].get("person_info"):
+            # First, check for explicit candidate_names from Firecrawl
+            if analysis.get("scraped_data") and analysis["scraped_data"].get("candidate_names"):
+                candidate_names = analysis["scraped_data"]["candidate_names"]
+                for candidate in candidate_names:
+                    name_candidates.append(candidate["name"])
+                    
+                    # Track frequency of each name
+                    norm_name = candidate["name"].lower().strip()
+                    if norm_name not in name_to_frequency:
+                        name_to_frequency[norm_name] = 0
+                    name_to_frequency[norm_name] += 1
+                
+                print(f"[BIOGEN] Found {len(candidate_names)} explicit name candidates")
+            
+            # Fallback to old method if no explicit candidates
+            if not name_candidates and analysis.get("scraped_data") and analysis["scraped_data"].get("person_info"):
                 person_info = analysis["scraped_data"]["person_info"]
                 
                 # Check nested person object
                 if "person" in person_info:
                     person_obj = person_info["person"]
                     if "fullName" in person_obj:
-                        person_name = person_obj["fullName"]
+                        name_candidates.append(person_obj["fullName"])
                     elif "full_name" in person_obj:
-                        person_name = person_obj["full_name"]
+                        name_candidates.append(person_obj["full_name"])
                     elif "name" in person_obj:
-                        person_name = person_obj["name"]
+                        name_candidates.append(person_obj["name"])
                 
                 # Check flat structure
-                if not person_name:
+                if not name_candidates:
                     if "fullName" in person_info:
-                        person_name = person_info["fullName"]
+                        name_candidates.append(person_info["fullName"])
                     elif "full_name" in person_info:
-                        person_name = person_info["full_name"]
+                        name_candidates.append(person_info["full_name"])
                     elif "name" in person_info:
-                        person_name = person_info["name"]
-            
-            # If we found a name, set it as the reference name and add this entry
-            if person_name:
-                if first_person_name is None:
-                    first_person_name = person_name
-                    print(f"[BIOGEN] Found first person: {first_person_name}")
+                        name_candidates.append(person_info["name"])
                 
-                # Check if this entry is about the same person
-                if first_person_name and self._is_same_person(person_name, first_person_name):
-                    entry = self._extract_person_data(analysis)
-                    if entry:
-                        relevant_data.append(entry)
+                # Update frequency for fallback names too
+                for name in name_candidates:
+                    if isinstance(name, str):
+                        norm_name = name.lower().strip()
+                        if norm_name not in name_to_frequency:
+                            name_to_frequency[norm_name] = 0
+                        name_to_frequency[norm_name] += 1
+                    elif isinstance(name, list):
+                        # Handle case where name is a list
+                        for n in name:
+                            if isinstance(n, str):
+                                norm_name = n.lower().strip()
+                                if norm_name not in name_to_frequency:
+                                    name_to_frequency[norm_name] = 0
+                                name_to_frequency[norm_name] += 1
+            
+            try:
+                # Process all found names
+                for person_name in name_candidates:
+                    if not person_name:
+                        continue
+                        
+                    # Handle both string and list cases
+                    if isinstance(person_name, str):
+                        # Normalize the name (lowercase, strip extra spaces)
+                        norm_name = person_name.lower().strip()
+                        all_names.append(norm_name)
+                        
+                        # Store analysis by name
+                        if norm_name not in name_to_analysis:
+                            name_to_analysis[norm_name] = []
+                        name_to_analysis[norm_name].append(analysis)
+                        
+                        # Store highest score for this name
+                        if norm_name not in name_to_score or match_score > name_to_score[norm_name]:
+                            name_to_score[norm_name] = match_score
+                    elif isinstance(person_name, list):
+                        # Handle list of names
+                        for name in person_name:
+                            if isinstance(name, str) and name:
+                                norm_name = name.lower().strip()
+                                all_names.append(norm_name)
+                                
+                                # Store analysis by name
+                                if norm_name not in name_to_analysis:
+                                    name_to_analysis[norm_name] = []
+                                name_to_analysis[norm_name].append(analysis)
+                                
+                                # Store highest score for this name
+                                if norm_name not in name_to_score or match_score > name_to_score[norm_name]:
+                                    name_to_score[norm_name] = match_score
+            except Exception as e:
+                print(f"[BIOGEN] Error processing name candidates: {e}")
+                print(f"[BIOGEN] name_candidates type: {type(name_candidates).__name__}")
+                print(f"[BIOGEN] name_candidates value: {name_candidates}")
+            
+            # Log the frequency counts
+            print(f"[BIOGEN] Name frequency counts: {name_to_frequency}")
+                    
         
-        print(f"[BIOGEN] Found {len(relevant_data)} entries matching the first person")
+        # Step 2: Group similar names (using our improved _is_same_person method)
+        name_groups = []
+        processed_names = set()
+        
+        for name in all_names:
+            if name in processed_names:
+                continue
+                
+            # Start a new group with this name
+            current_group = [name]
+            processed_names.add(name)
+            
+            # Find all similar names
+            for other_name in all_names:
+                if other_name not in processed_names and self._is_same_person(name, other_name):
+                    current_group.append(other_name)
+                    processed_names.add(other_name)
+            
+            # Add the group to our list of groups
+            name_groups.append(current_group)
+        
+        # Step 3: Find the most common name group
+        most_common_group = []
+        highest_frequency = 0
+        highest_score = 0
+        
+        for group in name_groups:
+            # Calculate total frequency of this name group
+            group_frequency = sum([name_to_frequency.get(name, 0) for name in group])
+            
+            # Find highest score in this group
+            group_max_score = max([name_to_score.get(name, 0) for name in group])
+            
+            # Log group statistics
+            print(f"[BIOGEN] Name group: {group}, Frequency: {group_frequency}, Max score: {group_max_score}")
+            
+            # Check if this group is more frequent, or equally frequent but higher scored
+            if group_frequency > highest_frequency or (group_frequency == highest_frequency and group_max_score > highest_score):
+                most_common_group = group
+                highest_frequency = group_frequency
+                highest_score = group_max_score
+        
+        # Step 4: Choose the canonical name from the most common group
+        # Prefer the name with the highest frequency, using score as a tiebreaker
+        canonical_name = None
+        if most_common_group:
+            # Sort the group by frequency first, then by score
+            sorted_names = sorted(most_common_group, 
+                                 key=lambda name: (name_to_frequency.get(name, 0), name_to_score.get(name, 0)), 
+                                 reverse=True)
+            
+            # Get top name by frequency
+            canonical_name = sorted_names[0]
+            top_frequency = name_to_frequency.get(canonical_name, 0)
+            
+            # Log individual name frequencies
+            for name in sorted_names[:5]:  # Log top 5 names
+                print(f"[BIOGEN] Name candidate: {name}, Frequency: {name_to_frequency.get(name, 0)}, Score: {name_to_score.get(name, 0)}")
+            
+            # Get original case/format from name_to_analysis keys
+            for original_name in name_to_analysis.keys():
+                if original_name.lower() == canonical_name:
+                    canonical_name = original_name
+                    break
+                    
+            print(f"[BIOGEN] Selected canonical name: '{canonical_name}' with frequency: {top_frequency}")
+        
+        # If we couldn't find any names, return empty list
+        if not canonical_name:
+            print("[BIOGEN] No names found in any analysis")
+            return []
+            
+        # Step 5: Collect all analyses that match the canonical name
+        relevant_data = []
+        for name in most_common_group:
+            for analysis in name_to_analysis[name]:
+                entry = self._extract_person_data(analysis)
+                if entry:
+                    relevant_data.append(entry)
+        
+        print(f"[BIOGEN] Found {len(relevant_data)} entries matching the canonical person")
         return relevant_data
     
     def _is_same_person(self, name1, name2):
         """
-        Simple comparison to check if two names likely refer to the same person
-        We do a case-insensitive check if either name is a substring of the other
+        Improved comparison to check if two names likely refer to the same person
+        Uses a more sophisticated approach than simple substring matching
         """
         if not name1 or not name2:
             return False
             
-        name1 = name1.lower()
-        name2 = name2.lower()
+        name1 = name1.lower().strip()
+        name2 = name2.lower().strip()
         
-        # Check if either name contains the other
+        # Exact match
+        if name1 == name2:
+            return True
+            
+        # Split names into components
+        name1_parts = name1.split()
+        name2_parts = name2.split()
+        
+        # If one is a single name and the other has multiple parts
+        if len(name1_parts) == 1 and len(name2_parts) > 1:
+            # Check if the single name is in the multi-part name
+            return name1_parts[0] in name2_parts
+        elif len(name2_parts) == 1 and len(name1_parts) > 1:
+            # Check if the single name is in the multi-part name
+            return name2_parts[0] in name1_parts
+            
+        # For multi-part names, check if first and last names match
+        if len(name1_parts) > 1 and len(name2_parts) > 1:
+            # Check if first names match
+            first_match = name1_parts[0] == name2_parts[0]
+            # Check if last names match
+            last_match = name1_parts[-1] == name2_parts[-1]
+            
+            # Return true if both first and last match
+            return first_match and last_match
+            
+        # Fallback to old method if the above checks don't apply
         return name1 in name2 or name2 in name1
     
     def _extract_person_data(self, analysis):
@@ -151,6 +322,7 @@ class BioGenerator:
     def prepare_prompt(self, identity_analyses, record_analyses=None):
         """
         Prepare the prompt for OpenAI API using identity and record analyses
+        Uses the improved frequency-based name selection
         
         Args:
             identity_analyses: List of identity analysis results from face search
@@ -159,24 +331,12 @@ class BioGenerator:
         Returns:
             Formatted prompt string
         """
-        # Get data for only the first person and their matches
+        # Get data for the most frequently occurring person and their matches
         person_data = self.prepare_summarized_data(identity_analyses)
         
-        # Extract name for the prompt
-        name = "the subject"
-        if person_data and len(person_data) > 0:
-            for entry in person_data:
-                if entry.get("person_info"):
-                    person_info = entry["person_info"]
-                    if "person" in person_info and person_info["person"].get("fullName"):
-                        name = person_info["person"]["fullName"]
-                        break
-                    elif person_info.get("fullName"):
-                        name = person_info["fullName"]
-                        break
-                    elif person_info.get("full_name"):
-                        name = person_info["full_name"]
-                        break
+        # Extract the canonical name using our improved approach
+        canonical_name = self.extract_name(identity_analyses)
+        name = canonical_name if canonical_name else "the subject"
         
         prompt = f"""
         You are a professional intelligence analyst creating a profile for {name} based on the following data.
@@ -243,10 +403,13 @@ class BioGenerator:
             if estimated_tokens > 15000:  # Leave room for response
                 print("[BIOGEN] Prompt too large, using emergency fallback...")
                 
-                # Take just the first match data and simplify prompt
+                # Use our canonical name approach even for the fallback
+                name = self.extract_name(identity_analyses) or "the subject"
+                # Take just the highest scored match for the fallback
                 if identity_analyses and len(identity_analyses) > 0:
-                    first_match = identity_analyses[0]
-                    name = self.extract_name([first_match]) or "the subject"
+                    # Sort matches by score (highest first)
+                    sorted_matches = sorted(identity_analyses, key=lambda x: x.get("score", 0), reverse=True)
+                    first_match = sorted_matches[0]
                     
                     # Extract only the most critical info
                     critical_info = {
@@ -317,27 +480,70 @@ class BioGenerator:
         return filepath
     
     def extract_name(self, identity_analyses):
-        """Try to extract a person's name from the data for filename purposes"""
-        for analysis in identity_analyses:
-            # Look for name in scraped data
-            if analysis.get('scraped_data') and analysis['scraped_data'].get('person_info'):
-                person_info = analysis['scraped_data']['person_info']
-                
-                # Check if there's a 'person' key with 'fullName' or 'full_name'
-                if 'person' in person_info:
-                    if 'fullName' in person_info['person']:
-                        return person_info['person']['fullName']
-                    elif 'full_name' in person_info['person']:
-                        return person_info['person']['full_name']
-                
-                # Direct keys in person_info
-                if 'fullName' in person_info:
-                    return person_info['fullName']
-                elif 'full_name' in person_info:
-                    return person_info['full_name']
+        """
+        Extract the most frequently occurring person's name from the data
+        This now uses the frequency-based approach for consistent naming
+        """
+        try:
+            # Use our existing frequency-based approach
+            summarized_data = self.prepare_summarized_data(identity_analyses)
+            
+            # If we found data, try to extract name from the first entry
+            # (the prepare_summarized_data method guarantees these are for the canonical person)
+            if summarized_data and len(summarized_data) > 0:
+                for entry in summarized_data:
+                    if entry.get("person_info"):
+                        person_info = entry["person_info"]
+                        
+                        # Check nested person object
+                        if "person" in person_info:
+                            person_obj = person_info["person"]
+                            if "fullName" in person_obj and isinstance(person_obj["fullName"], str):
+                                return person_obj["fullName"]
+                            elif "full_name" in person_obj and isinstance(person_obj["full_name"], str):
+                                return person_obj["full_name"]
+                            elif "name" in person_obj and isinstance(person_obj["name"], str):
+                                return person_obj["name"]
+                        
+                        # Direct keys in person_info
+                        if "fullName" in person_info and isinstance(person_info["fullName"], str):
+                            return person_info["fullName"]
+                        elif "full_name" in person_info and isinstance(person_info["full_name"], str):
+                            return person_info["full_name"]
+                        elif "name" in person_info and isinstance(person_info["name"], str):
+                            return person_info["name"]
+        except Exception as e:
+            print(f"[BIOGEN] Error in extract_name: {e}")
+            return "Unknown Subject"
         
+        try:
+            # Fallback method if summarized_data approach doesn't work
+            # This preserves some backward compatibility
+            for analysis in identity_analyses:
+                if analysis.get('scraped_data') and analysis['scraped_data'].get('person_info'):
+                    person_info = analysis['scraped_data']['person_info']
+                    
+                    # Check nested person object
+                    if 'person' in person_info:
+                        if 'fullName' in person_info['person'] and isinstance(person_info['person']['fullName'], str):
+                            return person_info['person']['fullName']
+                        elif 'full_name' in person_info['person'] and isinstance(person_info['person']['full_name'], str):
+                            return person_info['person']['full_name']
+                        elif 'name' in person_info['person'] and isinstance(person_info['person']['name'], str):
+                            return person_info['person']['name']
+                    
+                    # Direct keys in person_info
+                    if 'fullName' in person_info and isinstance(person_info['fullName'], str):
+                        return person_info['fullName']
+                    elif 'full_name' in person_info and isinstance(person_info['full_name'], str):
+                        return person_info['full_name']
+                    elif 'name' in person_info and isinstance(person_info['name'], str):
+                        return person_info['name']
+        except Exception as e:
+            print(f"[BIOGEN] Error in extract_name fallback: {e}")
+            
         # If we couldn't find a name
-        return None
+        return "Unknown Person"
     
     def process_result_directory(self, person_dir):
         """

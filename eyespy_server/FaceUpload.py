@@ -255,6 +255,9 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
             If the page is a social media profile, extract the profile owner's information.
             If the page is a news article or blog post, extract information about the main person featured.
             If certain information isn't available, that's okay.
+            
+            IMPORTANT: Be sure to include ALL possible forms of the person's name that appear on the page.
+            Look for different name variants, nicknames, formal names, etc.
             """
             
             # Parameters for scraping with prompt-based extraction
@@ -269,11 +272,16 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
             
             if result and 'json' in result and result['json']:
                 print(f"Successfully scraped person information from {current_url}")
+                
+                # Extract and collect all possible names explicitly
+                extracted_names = extract_name_candidates(result.get('json', {}), result.get('markdown', ''), current_url)
+                
                 return {
                     'person_info': result.get('json', {}),
                     'page_content': result.get('markdown', ''),
                     'metadata': result.get('metadata', {}),
-                    'source_url': current_url  # Track which URL was actually used
+                    'source_url': current_url,  # Track which URL was actually used
+                    'candidate_names': extracted_names  # Add explicit name candidates
                 }
             else:
                 print(f"No structured data returned from Firecrawl for {current_url}, trying next URL if available")
@@ -285,6 +293,93 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
     # If we get here, all URLs failed
     print("All scraping attempts failed")
     return None
+
+def extract_name_candidates(json_data: Dict, page_content: str, source_url: str) -> List[Dict[str, Any]]:
+    """
+    Extract all potential name candidates from scraped data
+    
+    Args:
+        json_data: Structured JSON data from Firecrawl
+        page_content: Raw page content as markdown
+        source_url: Source URL (for tracking origin)
+        
+    Returns:
+        List of name candidates with metadata
+    """
+    candidates = []
+    
+    try:
+        # 1. Extract names from person_info structure
+        if json_data:
+            # Check nested person object
+            if "person" in json_data:
+                person_obj = json_data["person"]
+                # Check for different name formats
+                for key in ["fullName", "full_name", "name", "display_name"]:
+                    if key in person_obj and person_obj[key]:
+                        candidates.append({
+                            "name": person_obj[key],
+                            "source": "json_person_" + key,
+                            "url": source_url,
+                            "confidence": 0.9  # High confidence for structured data
+                        })
+            
+            # Check flat structure
+            for key in ["fullName", "full_name", "name", "display_name"]:
+                if key in json_data and json_data[key]:
+                    candidates.append({
+                        "name": json_data[key],
+                        "source": "json_root_" + key,
+                        "url": source_url,
+                        "confidence": 0.8  # Good confidence for structured data
+                    })
+        
+        # 2. Look for additional name formats in the JSON
+        if json_data:
+            # Look for author fields
+            if "author" in json_data and json_data["author"]:
+                if isinstance(json_data["author"], str):
+                    candidates.append({
+                        "name": json_data["author"],
+                        "source": "json_author",
+                        "url": source_url,
+                        "confidence": 0.7
+                    })
+                elif isinstance(json_data["author"], dict) and "name" in json_data["author"]:
+                    candidates.append({
+                        "name": json_data["author"]["name"],
+                        "source": "json_author_name",
+                        "url": source_url,
+                        "confidence": 0.7
+                    })
+            
+            # Look for profile fields
+            if "profile" in json_data and json_data["profile"]:
+                if isinstance(json_data["profile"], dict) and "name" in json_data["profile"]:
+                    candidates.append({
+                        "name": json_data["profile"]["name"],
+                        "source": "json_profile_name",
+                        "url": source_url,
+                        "confidence": 0.7
+                    })
+        
+        # Only include non-empty names and remove duplicates
+        filtered_candidates = []
+        seen_names = set()
+        
+        for candidate in candidates:
+            name = candidate["name"]
+            if name and isinstance(name, str) and name.strip() and name.strip().lower() not in seen_names:
+                # Normalize the name
+                candidate["name"] = name.strip()
+                filtered_candidates.append(candidate)
+                seen_names.add(name.strip().lower())
+        
+        return filtered_candidates
+        
+    except Exception as e:
+        print(f"Error extracting name candidates: {e}")
+        return candidates  # Return whatever we have
 
 def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images_dir: str = None, fallback_urls: List[str] = None) -> Dict[str, Any]:
     """
