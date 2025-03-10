@@ -111,7 +111,7 @@ class EyeSpyController:
         This is because OpenCV window functions must run in the main thread
         """
         logger.info("Starting FotoRec in main thread...")
-        return FotoRec.main(face_processor=self.face_processor, shutdown_event=self.shutdown_event)
+        return FotoRec.main(face_processor=self.face_processor, shutdown_event=self.shutdown_event, skip_chrome=True)
     
     def shutdown(self):
         """Initiate a graceful shutdown of all components"""
