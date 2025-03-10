@@ -65,8 +65,8 @@ class EyeSpyController:
     def _initialize_components(self):
         """Initialize all system components"""
         components_status = {
-            "record_checking": False,
-            "bio_generation": False
+            "record_checking": True,
+            "bio_generation": True
         }
         
         # Initialize record checking FIRST if available
