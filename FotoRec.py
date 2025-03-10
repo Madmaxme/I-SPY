@@ -170,13 +170,16 @@ def save_face(frame, face_location, face_encoding, face_processor=None):
     
     return filename
 
-def main(face_processor=None, shutdown_event=None, url="about:blank"):
+def main(face_processor=None, shutdown_event=None, url="about:blank", skip_chrome=False):
     """Main function for face monitoring"""
     print("\n==== Chrome Face Monitor (Live Feed) ====")
     
-    # Open Chrome
-    open_chrome(url)
-    print("Chrome opened. Starting live feed monitoring...")
+    # Open Chrome if not skipped
+    if not skip_chrome:
+        open_chrome(url)
+        print("Chrome opened. Starting live feed monitoring...")
+    else:
+        print("Skipping Chrome window, starting live feed monitoring of existing screen...")
     
     # Create monitoring window
     cv2.namedWindow("Face Monitoring", cv2.WINDOW_NORMAL)
