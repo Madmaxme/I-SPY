@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  eyespy-server:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploaded_faces:/app/uploaded_faces
+      - ./face_search_results:/app/face_search_results
+    environment:
+      - PORT=8000
+      - FACECHECK_API_TOKEN=${FACECHECK_API_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - RECORDS_API_KEY=${RECORDS_API_KEY}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+    restart: unless-stopped

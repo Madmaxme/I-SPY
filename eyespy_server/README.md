@@ -2,7 +2,7 @@
 
 Backend server component of the EyeSpy system. This server receives face images from clients, processes them to find matches, and stores results.
 
-## Setup
+## Setup (Local Installation)
 
 1. Copy or symlink the following files from the root EyeSpy directory into this directory:
 ```
@@ -26,7 +26,28 @@ RECORDS_API_KEY=your_records_api_key
 pip install -r requirements.txt
 ```
 
-## Usage
+## Docker Setup
+
+1. Create a `.env` file with your API keys (see above) or copy from `.env.example`
+
+2. Build and run with Docker Compose:
+```bash
+# Build the image
+docker-compose build
+
+# Start the server
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+```
+
+3. Stop the server:
+```bash
+docker-compose down
+```
+
+## Usage (Local)
 
 Run the server:
 ```bash
@@ -52,4 +73,5 @@ Options:
 
 ## Stopping
 
-Use Ctrl+C in the terminal to stop the server.
+- Local: Use Ctrl+C in the terminal to stop the server
+- Docker: Run `docker-compose down`

@@ -1,0 +1,28 @@
+# Git files
+.git
+.gitignore
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Directories with potentially large data
+uploaded_faces/*
+face_search_results/*
+
+# Ensure required empty directories are created
+!uploaded_faces/.gitkeep
+!face_search_results/.gitkeep
+!face_search_results/temp_images/.gitkeep
+!face_search_results/unknown/images/.gitkeep
