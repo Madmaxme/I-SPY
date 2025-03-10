@@ -2,105 +2,105 @@
 
 A face detection and identity search system that monitors your screen for faces, saves them, and searches for their identities online.
 
+## Client-Server Architecture
+
+The system has been reorganized into a client-server architecture with separate directories:
+
+- **eyespy_client/** - Contains the face detection client that captures faces from your screen
+- **eyespy_server/** - Contains the backend processing server that handles face recognition and identity search
+
+Each directory has its own README with detailed setup and usage instructions.
+
 ## Features
 
 - **Screen Monitoring**: Capture faces from any part of your screen
 - **Face Detection**: Automatically detect and save unique faces
 - **Identity Search**: Search for identities on the web using FaceCheckID
-- **Integrated System**: Combined face detection and processing pipeline
-- **Queue Management**: Dynamic queue system to handle any volume of faces
-- **Graceful Shutdown**: Proper shutdown sequence to ensure no faces are lost
-- **Multi-threaded Processing**: Parallel processing for efficiency
+- **Client-Server Architecture**: Separate client for face detection and server for processing
+- **Duplicate Avoidance**: Client maintains local database of known faces
+- **Multi-threaded Processing**: Server processes faces in background threads
 
 ## Requirements
 
 - Python 3.7+
-- Required packages: OpenCV, face_recognition, PIL, requests, etc.
 - API Keys:
   - FaceCheckID API key 
   - Firecrawl API key (optional)
+  - OpenAI API key (for bio generation, optional)
+  - Records API key (for record checking, optional)
 
-> **Note on FireCrawl Errors**: The system will work correctly even if you see FireCrawl errors like "Rate limit exceeded" or "website no longer supported". These errors just mean that some additional information about the identified people couldn't be scraped, but the face matching and organization will still work properly.
+## Directory Structure
 
-## Setup
-
-1. Create a `.env` file with your API keys:
 ```
-FACECHECK_API_TOKEN=your_facecheck_api_token
-FIRECRAWL_API_KEY=your_firecrawl_api_key
+EyeSpy/
+├── README.md                # Main README with overview
+├── eyespy_client/           # Client component
+│   ├── FotoRec_client.py    # Client application
+│   ├── README.md            # Client-specific instructions
+│   ├── requirements.txt     # Client dependencies
+│   └── detected_faces/      # Client's face storage (created on first run)
+├── eyespy_server/           # Server component
+│   ├── FaceUpload.py        # Face identity search
+│   ├── backend_server.py    # Flask API server
+│   ├── bio_integration.py   # Bio generation integration
+│   ├── BioGenerator.py      # Bio generation functionality
+│   ├── record_integration.py# Record checking integration
+│   ├── RecordChecker.py     # Record checking functionality
+│   ├── README.md            # Server-specific instructions
+│   ├── requirements.txt     # Server dependencies
+│   ├── uploaded_faces/      # Server's uploaded face storage (created on first run)
+│   └── face_search_results/ # Server's results storage (created on first run)
 ```
 
-2. Install required packages:
-```
-pip install opencv-python face_recognition pillow requests python-dotenv firecrawl-py
-```
+## Quick Start Guide
 
-## Running the System
-
-There are three ways to run the system:
-
-### 1. Full System (Recommended)
-
-Run the controller to manage both face detection and processing:
-
+1. Set up and start the server:
 ```bash
-python controller.py --queue-size 100 --workers 2
+cd eyespy_server
+pip install -r requirements.txt
+python backend_server.py --port 5001
 ```
 
-Options:
-- `--queue-size`: Maximum number of faces in the processing queue
-- `--workers`: Number of parallel face processing workers
-
-### 2. Face Detection Only
-
-Run only the face detection component:
-
+2. In a new terminal, set up and start the client:
 ```bash
-python FotoRec.py
+cd eyespy_client
+pip install -r requirements.txt
+python FotoRec_client.py --server http://localhost:5001
 ```
 
-This will capture faces but not search for identities.
+## Data Flow
 
-### 3. Face Processing Only
+1. **Client**: Detects faces from screen captures
+2. **Client**: Saves new unique faces locally in `eyespy_client/detected_faces/`
+3. **Client**: Uploads new faces to the server
+4. **Server**: Receives faces and saves them in `eyespy_server/uploaded_faces/`
+5. **Server**: Processes faces to find identity matches
+6. **Server**: Stores results in `eyespy_server/face_search_results/`
 
-Process previously detected faces:
+## Getting Started
 
-```bash
-python FaceUpload.py
-```
+See the README files in the respective directories for detailed setup and usage instructions:
 
-Options:
-- `--dir`: Directory containing face images
-- `--limit`: Maximum number of faces to process
-- `--force`: Process all faces, even if previously processed
-- `--file`: Process a specific face file
+- [Client Setup and Usage](eyespy_client/README.md)
+- [Server Setup and Usage](eyespy_server/README.md)
 
-## Stopping the System
+## Testing
 
-The system handles graceful shutdown for proper termination:
+To test the system:
+1. Start the server first, noting the port number
+2. Start the client, pointing it to the server URL
+3. Position a face on your screen
+4. The client will detect faces, save them locally, and upload them to the server
+5. The server will process the faces and save results
+6. Check the output directories to verify results
 
-1. Press `q` in the face monitoring window or Ctrl+C in the terminal
-2. The system will:
-   - Stop face detection first
-   - Process any remaining faces in the queue
-   - Shut down completely
+## Deployment Options
 
-## Architecture
+### Local Development
+- Run both client and server on the same machine
+- Client connects to http://localhost:5001 (or whichever port you choose)
 
-The system consists of three main components:
-
-1. **FotoRec**: Face detection from screen captures
-2. **FaceUpload**: Face identity search using FaceCheckID
-3. **Controller**: Manages communication between components
-
-These are connected through a thread-safe queue system that ensures efficient processing.
-
-## Output
-
-- Detected faces are saved in `detected_faces/`
-- Search results are organized by person in `face_search_results/`
-  - Each person gets their own directory (named after them if possible)
-  - Each person directory contains:
-    - JSON result files with search details
-    - An `images/` subfolder with all matching images
-- Unknown faces or faces without clear identities go to `face_search_results/unknown/`
+### Production Deployment
+- Host the backend server on a cloud service
+- Configure clients to connect to the remote server URL
+- Set EYESPY_BACKEND_URL environment variable on clients

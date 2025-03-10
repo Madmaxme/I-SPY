@@ -7,16 +7,25 @@ import os
 import pickle
 import webbrowser
 import threading
+import requests
 from datetime import datetime
 from queue import Queue, Full, Empty
 
-# Create directory to save face screenshots if it doesn't exist
-save_dir = "detected_faces"
+# Get the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Create directory to save face screenshots in the client directory
+save_dir = os.path.join(script_dir, "detected_faces")
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
+    print(f"Created detected faces directory: {save_dir}")
 
 # File to store face encodings
 face_encodings_file = os.path.join(save_dir, "known_face_encodings.pkl")
+
+# Backend server configuration
+DEFAULT_BACKEND_URL = "http://localhost:8000"  # Default backend URL
+backend_url = os.environ.get("EYESPY_BACKEND_URL", DEFAULT_BACKEND_URL)
 
 # Initialize variables
 known_face_encodings = []
@@ -124,7 +133,28 @@ def is_new_face(face_encoding, tolerance=0.6):
     face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
     return min(face_distances) > tolerance
 
-def save_face(frame, face_location, face_encoding, face_processor=None):
+def upload_to_backend(file_path):
+    """Upload a face image to the backend server"""
+    upload_url = f"{backend_url}/api/upload_face"
+    
+    try:
+        print(f"Uploading face to backend at {upload_url}")
+        with open(file_path, 'rb') as f:
+            files = {'face': (os.path.basename(file_path), f, 'image/jpeg')}
+            response = requests.post(upload_url, files=files, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"Face uploaded successfully: {response.json()}")
+            return True
+        else:
+            print(f"Face upload failed: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"Error uploading face to backend: {e}")
+        return False
+
+def save_face(frame, face_location, face_encoding):
     """Save a detected face if it's new"""
     global known_face_encodings
     
@@ -161,18 +191,46 @@ def save_face(frame, face_location, face_encoding, face_processor=None):
     with open(face_encodings_file, 'wb') as f:
         pickle.dump(known_face_encodings, f)
     
-    # Process the face if processor provided
-    if face_processor:
-        try:
-            face_processor.process_face(filename)
-        except Exception as e:
-            print(f"Error processing face: {e}")
+    # Upload to backend
+    thread = threading.Thread(
+        target=upload_to_backend,
+        args=(filename,),
+        daemon=True
+    )
+    thread.start()
     
     return filename
 
-def main(face_processor=None, shutdown_event=None, url="about:blank", skip_chrome=False):
+def check_backend_health():
+    """Check if backend server is accessible"""
+    try:
+        health_url = f"{backend_url}/api/health"
+        response = requests.get(health_url, timeout=5)
+        if response.status_code == 200:
+            print(f"Backend server is healthy at {backend_url}")
+            return True
+        else:
+            print(f"Backend server returned unexpected status: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"Error connecting to backend server at {backend_url}: {e}")
+        return False
+
+def main(shutdown_event=None, url="about:blank", skip_chrome=False, server_url=None):
     """Main function for face monitoring"""
-    print("\n==== Chrome Face Monitor (Live Feed) ====")
+    print("\n==== EyeSpy Face Monitor Client (Live Feed) ====")
+    
+    # Set backend URL if provided
+    global backend_url
+    if server_url:
+        backend_url = server_url
+        print(f"Using custom backend URL: {backend_url}")
+    
+    # Check backend connectivity
+    if not check_backend_health():
+        print("Warning: Backend server is not responding. Face processing will be local only.")
+        print(f"Make sure the backend server is running at {backend_url}")
+        # Still continue for local face detection without processing
     
     # Open Chrome if not skipped
     if not skip_chrome:
@@ -233,7 +291,7 @@ def main(face_processor=None, shutdown_event=None, url="about:blank", skip_chrom
                         
                         # Save if it's a new face
                         if i < len(face_encodings):
-                            save_face(frame, scaled_loc, face_encodings[i], face_processor)
+                            save_face(frame, scaled_loc, face_encodings[i])
             
             # Toggle processing flag
             process_every_other = not process_every_other
@@ -282,4 +340,13 @@ def main(face_processor=None, shutdown_event=None, url="about:blank", skip_chrom
         print(f"- {len(known_face_encodings)} unique faces detected")
 
 if __name__ == "__main__":
-    main(url="about:blank")
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='EyeSpy Face Monitor Client')
+    parser.add_argument('--url', default="about:blank", help='URL to open in Chrome')
+    parser.add_argument('--skip-chrome', action='store_true', help='Skip opening Chrome')
+    parser.add_argument('--server', default=None, help='Backend server URL (default: http://localhost:5000)')
+    
+    args = parser.parse_args()
+    main(url=args.url, skip_chrome=args.skip_chrome, server_url=args.server)
