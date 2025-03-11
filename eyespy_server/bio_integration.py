@@ -8,8 +8,10 @@ import os
 import time
 import threading
 import traceback
+import json
 from BioGenerator import BioGenerator
 from RecordChecker import RecordChecker
+from NameResolver import NameResolver
 
 def add_bio_generator_to_faceupload():
     """
@@ -74,6 +76,29 @@ def process_directory_with_records_then_bio(person_dir):
         time.sleep(2)
         
         print(f"[BIO_INTEGRATION] Starting processing for: {person_dir}")
+        
+        # Step 0: Load the results JSON file to get identity_analyses
+        result_files = [f for f in os.listdir(person_dir) if f.startswith("results_") and f.endswith(".json")]
+        if not result_files:
+            print(f"[BIO_INTEGRATION] No results files found in {person_dir}")
+            return
+
+        # Sort by modification time (newest first)
+        result_files.sort(key=lambda f: os.path.getmtime(os.path.join(person_dir, f)), reverse=True)
+        json_file = os.path.join(person_dir, result_files[0])
+        
+        # Load the data
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+        
+        # Getting canonical name first ensures it's determined consistently
+        identity_analyses = data.get("identity_analyses", [])
+        if identity_analyses:
+            canonical_name = NameResolver.resolve_canonical_name(identity_analyses)
+            print(f"[BIO_INTEGRATION] Canonical name resolved: '{canonical_name}'")
+        else:
+            print(f"[BIO_INTEGRATION] No identity analyses found in {json_file}")
+            canonical_name = "Unknown Person"
         
         # Step 1: Check records first
         print(f"[BIO_INTEGRATION] Starting record checking for: {person_dir}")

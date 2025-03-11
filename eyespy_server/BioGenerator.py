@@ -5,6 +5,7 @@ import traceback
 from datetime import datetime
 import openai
 from dotenv import load_dotenv
+from NameResolver import NameResolver
 
 # Load environment variables from .env file (if it exists)
 load_dotenv()
@@ -241,41 +242,10 @@ class BioGenerator:
         """
         Improved comparison to check if two names likely refer to the same person
         Uses a more sophisticated approach than simple substring matching
+        
+        Now calls the shared NameResolver implementation to ensure consistency
         """
-        if not name1 or not name2:
-            return False
-            
-        name1 = name1.lower().strip()
-        name2 = name2.lower().strip()
-        
-        # Exact match
-        if name1 == name2:
-            return True
-            
-        # Split names into components
-        name1_parts = name1.split()
-        name2_parts = name2.split()
-        
-        # If one is a single name and the other has multiple parts
-        if len(name1_parts) == 1 and len(name2_parts) > 1:
-            # Check if the single name is in the multi-part name
-            return name1_parts[0] in name2_parts
-        elif len(name2_parts) == 1 and len(name1_parts) > 1:
-            # Check if the single name is in the multi-part name
-            return name2_parts[0] in name1_parts
-            
-        # For multi-part names, check if first and last names match
-        if len(name1_parts) > 1 and len(name2_parts) > 1:
-            # Check if first names match
-            first_match = name1_parts[0] == name2_parts[0]
-            # Check if last names match
-            last_match = name1_parts[-1] == name2_parts[-1]
-            
-            # Return true if both first and last match
-            return first_match and last_match
-            
-        # Fallback to old method if the above checks don't apply
-        return name1 in name2 or name2 in name1
+        return NameResolver.is_same_person(name1, name2)
     
     def _extract_person_data(self, analysis):
         """
@@ -482,68 +452,13 @@ class BioGenerator:
     def extract_name(self, identity_analyses):
         """
         Extract the most frequently occurring person's name from the data
-        This now uses the frequency-based approach for consistent naming
+        This now uses the shared NameResolver to ensure consistency across modules
         """
-        try:
-            # Use our existing frequency-based approach
-            summarized_data = self.prepare_summarized_data(identity_analyses)
-            
-            # If we found data, try to extract name from the first entry
-            # (the prepare_summarized_data method guarantees these are for the canonical person)
-            if summarized_data and len(summarized_data) > 0:
-                for entry in summarized_data:
-                    if entry.get("person_info"):
-                        person_info = entry["person_info"]
-                        
-                        # Check nested person object
-                        if "person" in person_info:
-                            person_obj = person_info["person"]
-                            if "fullName" in person_obj and isinstance(person_obj["fullName"], str):
-                                return person_obj["fullName"]
-                            elif "full_name" in person_obj and isinstance(person_obj["full_name"], str):
-                                return person_obj["full_name"]
-                            elif "name" in person_obj and isinstance(person_obj["name"], str):
-                                return person_obj["name"]
-                        
-                        # Direct keys in person_info
-                        if "fullName" in person_info and isinstance(person_info["fullName"], str):
-                            return person_info["fullName"]
-                        elif "full_name" in person_info and isinstance(person_info["full_name"], str):
-                            return person_info["full_name"]
-                        elif "name" in person_info and isinstance(person_info["name"], str):
-                            return person_info["name"]
-        except Exception as e:
-            print(f"[BIOGEN] Error in extract_name: {e}")
-            return "Unknown Subject"
+        # Call the shared implementation
+        canonical_name = NameResolver.resolve_canonical_name(identity_analyses)
         
-        try:
-            # Fallback method if summarized_data approach doesn't work
-            # This preserves some backward compatibility
-            for analysis in identity_analyses:
-                if analysis.get('scraped_data') and analysis['scraped_data'].get('person_info'):
-                    person_info = analysis['scraped_data']['person_info']
-                    
-                    # Check nested person object
-                    if 'person' in person_info:
-                        if 'fullName' in person_info['person'] and isinstance(person_info['person']['fullName'], str):
-                            return person_info['person']['fullName']
-                        elif 'full_name' in person_info['person'] and isinstance(person_info['person']['full_name'], str):
-                            return person_info['person']['full_name']
-                        elif 'name' in person_info['person'] and isinstance(person_info['person']['name'], str):
-                            return person_info['person']['name']
-                    
-                    # Direct keys in person_info
-                    if 'fullName' in person_info and isinstance(person_info['fullName'], str):
-                        return person_info['fullName']
-                    elif 'full_name' in person_info and isinstance(person_info['full_name'], str):
-                        return person_info['full_name']
-                    elif 'name' in person_info and isinstance(person_info['name'], str):
-                        return person_info['name']
-        except Exception as e:
-            print(f"[BIOGEN] Error in extract_name fallback: {e}")
-            
-        # If we couldn't find a name
-        return "Unknown Person"
+        print(f"[BIOGEN] Using canonical name from NameResolver: '{canonical_name}'")
+        return canonical_name
     
     def process_result_directory(self, person_dir):
         """

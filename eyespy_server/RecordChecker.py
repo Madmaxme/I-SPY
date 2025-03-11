@@ -17,6 +17,7 @@ import traceback
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
+from NameResolver import NameResolver
 
 # Load environment variables from .env file
 load_dotenv()
@@ -74,6 +75,7 @@ class RecordChecker:
     def clean_name_for_search(self, name):
         """
         Clean and format a name for API search, handling middle names/initials
+        Now delegates to the shared NameResolver for consistency
         
         Args:
             name: Raw name string that might contain prefixes/formatting
@@ -81,61 +83,14 @@ class RecordChecker:
         Returns:
             Cleaned name suitable for API search
         """
-        if not name:
-            return None
-            
-        # VERY IMPORTANT: Handle case where name is a list
-        if isinstance(name, list):
-            # If it's a list, process each name and return a list of variations
-            all_variations = []
-            for name_item in name:
-                if isinstance(name_item, str):
-                    variations = self.clean_name_for_search(name_item)
-                    if variations:
-                        if isinstance(variations, list):
-                            all_variations.extend(variations)
-                        else:
-                            all_variations.append(variations)
-            return all_variations if all_variations else None
-            
-        # Now we know name is a string
-        # Remove any markdown formatting or prefixes
-        prefixes = ["**Full Name and Professional Title:**", "Full Name:", "Name:", "- "]
-        for prefix in prefixes:
-            if isinstance(name, str) and name.startswith(prefix):
-                name = name.replace(prefix, "").strip()
-        
-        # Remove any markdown characters
-        if isinstance(name, str):
-            name = re.sub(r'\*\*|\*|#|_|-', '', name).strip()
-        
-        # Try different name variations for better matching
-        name_variations = []
-        
-        # Add original name
-        if isinstance(name, str):
-            name_variations.append(name)
-            
-            # Check if there might be a middle initial/name
-            name_parts = name.split()
-            if len(name_parts) > 2:
-                # Version without middle name/initial
-                first_last = f"{name_parts[0]} {name_parts[-1]}"
-                name_variations.append(first_last)
-                
-                # If middle part is just one character (likely an initial)
-                if len(name_parts) == 3 and len(name_parts[1]) == 1:
-                    # Try with just initial (no period)
-                    name_variations.append(f"{name_parts[0]} {name_parts[1]} {name_parts[2]}")
-                    # Try with initial and period
-                    name_variations.append(f"{name_parts[0]} {name_parts[1]}. {name_parts[2]}")
-        
-        print(f"[RECORDCHECKER] Name variations to try: {name_variations}")
+        name_variations = NameResolver.clean_name_for_search(name)
+        print(f"[RECORDCHECKER] Using name variations from NameResolver: {name_variations}")
         return name_variations
     
     def extract_search_params(self, bio_data: Dict[str, Any], identity_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Extract search parameters from bio data and identity analyses
+        Now uses NameResolver to get the canonical name for consistency
         
         Args:
             bio_data: Biographical data (as text or parsed dict)
@@ -154,10 +109,61 @@ class RecordChecker:
             "social_profiles": []
         }
         
-        # Extract basic info from the bio if it's already parsed
+        # IMPORTANT CHANGE: First try to get the canonical name from the identity analyses
+        if identity_analyses:
+            canonical_name = NameResolver.resolve_canonical_name(identity_analyses)
+            if canonical_name and canonical_name != "Unknown Person":
+                search_params["name"] = canonical_name
+                print(f"[RECORDCHECKER] Using canonical name from NameResolver: '{canonical_name}'")
+        
+        # Only proceed with other name extraction methods if we didn't get a canonical name
+        if not search_params["name"]:
+            print("[RECORDCHECKER] No canonical name found, falling back to bio data extraction")
+            
+            # Extract basic info from the bio if it's already parsed
+            if isinstance(bio_data, dict):
+                if "name" in bio_data:
+                    search_params["name"] = bio_data["name"]
+            
+            # If bio is a string, try to extract key information using basic parsing
+            elif isinstance(bio_data, str):
+                # Try to extract name (usually in the first few lines)
+                lines = bio_data.split('\n')
+                
+                # Common patterns for names in the bio text
+                name_patterns = [
+                    r'\*\*Full Name.*?:(.*?)(?:\*\*|$)',  # **Full Name**: John Doe
+                    r'Name:(.*?)(?:$|\n)',                # Name: John Doe
+                    r'^(.*?)(?:is|was|,|\n|$)'            # John Doe is a...
+                ]
+                
+                # Try each pattern until we find a name
+                for pattern in name_patterns:
+                    for i, line in enumerate(lines[:5]):  # Check first 5 lines only
+                        if line.strip():  # Skip empty lines
+                            match = re.search(pattern, line, re.IGNORECASE)
+                            if match:
+                                potential_name = match.group(1).strip()
+                                # Verify this looks like a name (at least 2 words, no special chars)
+                                if ' ' in potential_name and len(potential_name.split()) >= 2:
+                                    if re.match(r'^[A-Za-z\s\.\-\']+$', potential_name):
+                                        search_params["name"] = potential_name
+                                        break
+                    if search_params["name"]:
+                        break
+                
+                # If we failed with patterns, try a simple approach - take the first line if it looks like a name
+                if not search_params["name"] and lines:
+                    first_line = lines[0].strip()
+                    # Remove any markdown formatting
+                    first_line = re.sub(r'\*\*|\*|#', '', first_line)
+                    # If it looks like a name (2+ words, only letters)
+                    if ' ' in first_line and len(first_line.split()) >= 2:
+                        if re.match(r'^[A-Za-z\s\.\-\']+$', first_line):
+                            search_params["name"] = first_line
+        
+        # Extract location from bio data
         if isinstance(bio_data, dict):
-            if "name" in bio_data:
-                search_params["name"] = bio_data["name"]
             if "location" in bio_data:
                 search_params["location"] = bio_data["location"]
             if "age" in bio_data:
@@ -166,43 +172,8 @@ class RecordChecker:
                 search_params["occupation"] = bio_data["occupation"]
             if "company" in bio_data:
                 search_params["company"] = bio_data["company"]
-        
-        # If bio is a string, try to extract key information using basic parsing
         elif isinstance(bio_data, str):
-            # Try to extract name (usually in the first few lines)
-            lines = bio_data.split('\n')
-            
-            # Common patterns for names in the bio text
-            name_patterns = [
-                r'\*\*Full Name.*?:(.*?)(?:\*\*|$)',  # **Full Name**: John Doe
-                r'Name:(.*?)(?:$|\n)',                # Name: John Doe
-                r'^(.*?)(?:is|was|,|\n|$)'            # John Doe is a...
-            ]
-            
-            # Try each pattern until we find a name
-            for pattern in name_patterns:
-                for i, line in enumerate(lines[:5]):  # Check first 5 lines only
-                    if line.strip():  # Skip empty lines
-                        match = re.search(pattern, line, re.IGNORECASE)
-                        if match:
-                            potential_name = match.group(1).strip()
-                            # Verify this looks like a name (at least 2 words, no special chars)
-                            if ' ' in potential_name and len(potential_name.split()) >= 2:
-                                if re.match(r'^[A-Za-z\s\.\-\']+$', potential_name):
-                                    search_params["name"] = potential_name
-                                    break
-                if search_params["name"]:
-                    break
-            
-            # If we failed with patterns, try a simple approach - take the first line if it looks like a name
-            if not search_params["name"] and lines:
-                first_line = lines[0].strip()
-                # Remove any markdown formatting
-                first_line = re.sub(r'\*\*|\*|#', '', first_line)
-                # If it looks like a name (2+ words, only letters)
-                if ' ' in first_line and len(first_line.split()) >= 2:
-                    if re.match(r'^[A-Za-z\s\.\-\']+$', first_line):
-                        search_params["name"] = first_line
+            lines = bio_data.split('\n') if isinstance(bio_data, str) else []
             
             # Look for location patterns
             location_indicators = ["located in", "lives in", "based in", "from", "residing in", "location:", "address:"]
@@ -246,7 +217,7 @@ class RecordChecker:
                 if search_params["company"]:
                     break
         
-        # Extract additional data from identity_analyses
+        # Extract additional data from identity_analyses (only if not already found)
         for analysis in identity_analyses:
             # Extract data from scraped information
             if analysis.get("scraped_data") and analysis["scraped_data"].get("person_info"):
@@ -255,7 +226,7 @@ class RecordChecker:
                 # Check if there's a nested person object
                 if "person" in person_info:
                     person_data = person_info["person"]
-                    # Extract name if not already found
+                    # Extract name if not already found via canonical method
                     if not search_params["name"] and (person_data.get("fullName") or person_data.get("full_name")):
                         search_params["name"] = person_data.get("fullName") or person_data.get("full_name")
                     
@@ -273,7 +244,7 @@ class RecordChecker:
                 
                 # Direct extraction if not nested
                 else:
-                    # Extract name
+                    # Extract name if not already found via canonical method
                     if not search_params["name"] and (person_info.get("fullName") or person_info.get("full_name")):
                         search_params["name"] = person_info.get("fullName") or person_info.get("full_name")
                     
