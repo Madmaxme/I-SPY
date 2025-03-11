@@ -6,8 +6,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./uploaded_faces:/app/uploaded_faces
-      - ./face_search_results:/app/face_search_results
+      - .:/app  
     environment:
       - PORT=8000
       - FACECHECK_API_TOKEN=${FACECHECK_API_TOKEN}
