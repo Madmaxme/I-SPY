@@ -5,6 +5,7 @@ import base64
 import requests
 import argparse
 import glob
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import urllib.parse
@@ -29,6 +30,10 @@ APITOKEN = os.getenv('FACECHECK_API_TOKEN')
 
 # Firecrawl API Configuration
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
+
+# Zyte API Configuration
+ZYTE_API_KEY = os.getenv('ZYTE_API_KEY')
+ZYTE_AVAILABLE = ZYTE_API_KEY is not None and ZYTE_API_KEY != ''
 
 # Default directory for detected faces (should match FotoRec.py save_dir)
 DEFAULT_FACES_DIR = "detected_faces"
@@ -198,9 +203,177 @@ def collect_fallback_urls(search_results: List[Dict], primary_index: int) -> Lis
     
     return fallback_urls
 
+def scrape_with_zyte(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Scrape a social media URL using Zyte API to extract profile information.
+    
+    Args:
+        url: The social media profile URL to scrape
+        
+    Returns:
+        Dictionary containing the scraped information or None if scraping failed
+    """
+    if not ZYTE_AVAILABLE:
+        print(f"Zyte API key not set. Cannot scrape social media profile: {url}")
+        return None
+    
+    try:
+        # Normalize URL to profile URL (remove post paths, etc.)
+        original_url = url
+        normalized_url = normalize_social_media_url(url)
+        
+        if normalized_url != original_url:
+            print(f"Normalized social media URL: {original_url} → {normalized_url}")
+        
+        print(f"Scraping social media profile with Zyte API: {normalized_url}")
+        
+        # Make request to Zyte API
+        api_response = requests.post(
+            "https://api.zyte.com/v1/extract",
+            auth=(ZYTE_API_KEY, ""),
+            json={
+                "url": normalized_url,
+                "product": True,
+                "productOptions": {"extractFrom": "httpResponseBody", "ai": True},
+            },
+            timeout=30
+        )
+        
+        # Check if request was successful
+        if api_response.status_code != 200:
+            print(f"Zyte API request failed with status {api_response.status_code}: {api_response.text}")
+            return None
+        
+        # Get the product data from response
+        product_data = api_response.json().get("product", {})
+        if not product_data:
+            print(f"No product data returned from Zyte API for {url}")
+            return None
+            
+        print(f"Successfully scraped profile with Zyte API: {url}")
+        
+        # Extract name from product data
+        # For social media profiles, it's typically in format "Name (@username) • ..."
+        name = product_data.get("name", "")
+        extracted_name = None
+        
+        # Parse name using regex to extract actual name
+        if name:
+            # Pattern for "Name (@username)" format
+            name_match = re.match(r'^([^(@]+).*', name)
+            if name_match:
+                extracted_name = name_match.group(1).strip()
+                print(f"Extracted name from profile: '{extracted_name}'")
+        
+        # Extract username from URL
+        username = None
+        domain = extract_domain(url).lower()
+        
+        if "instagram.com" in domain:
+            username_match = re.search(r'instagram\.com/([^/\?]+)', url)
+            if username_match:
+                username = username_match.group(1)
+        elif "twitter.com" in domain or "x.com" in domain:
+            username_match = re.search(r'(?:twitter|x)\.com/([^/\?]+)', url)
+            if username_match:
+                username = username_match.group(1)
+        elif "facebook.com" in domain:
+            username_match = re.search(r'facebook\.com/([^/\?]+)', url)
+            if username_match:
+                username = username_match.group(1)
+        
+        # If no name was extracted but we have a username, use it as a fallback
+        if not extracted_name and username:
+            extracted_name = username
+            print(f"No name found in profile, using username as fallback: '{username}'")
+            
+        # If we still don't have a name, we can't proceed
+        if not extracted_name:
+            print(f"Could not extract name or username from profile: {url}")
+            return None
+            
+        # Create properly structured candidate name
+        candidate_names = []
+        candidate_names.append({
+            "name": extracted_name,
+            "source": f"zyte_api_{domain}",
+            "url": url,
+            "confidence": 0.9 if extracted_name != username else 0.7  # Lower confidence if using username as name
+        })
+        
+        # Create structured data that matches Firecrawl's format
+        # This ensures compatibility with the rest of the pipeline
+        full_content = f"Profile: {name}\nDescription: {product_data.get('description', '')}"
+        
+        return {
+            'person_info': {
+                'person': {
+                    'fullName': extracted_name if extracted_name else "Unknown",
+                    'username': username,
+                    'full_content': full_content
+                }
+            },
+            'page_content': full_content,
+            'metadata': product_data.get('metadata', {}),
+            'source_url': url,
+            'candidate_names': candidate_names
+        }
+        
+    except Exception as e:
+        print(f"Error scraping {url} with Zyte API: {e}")
+        return None
+
+def normalize_social_media_url(url: str) -> str:
+    """
+    Normalize social media URLs to profile URLs by removing post paths, etc.
+    
+    Args:
+        url: The original social media URL
+        
+    Returns:
+        Normalized profile URL (e.g., instagram.com/username from instagram.com/username/p/postid)
+    """
+    domain = extract_domain(url).lower()
+    
+    # Extract just the username part for profile URLs
+    if "instagram.com" in domain:
+        username_match = re.search(r'instagram\.com/([^/\?]+)', url)
+        if username_match and username_match.group(1) not in ['p', 'explore', 'reels']:
+            username = username_match.group(1)
+            return f"https://instagram.com/{username}"
+    elif "twitter.com" in domain or "x.com" in domain:
+        username_match = re.search(r'(?:twitter|x)\.com/([^/\?]+)', url)
+        if username_match and username_match.group(1) not in ['status', 'hashtag', 'search', 'home']:
+            username = username_match.group(1)
+            return f"https://{'twitter' if 'twitter' in domain else 'x'}.com/{username}"
+    elif "facebook.com" in domain:
+        username_match = re.search(r'facebook\.com/([^/\?]+)', url)
+        if username_match and username_match.group(1) not in ['pages', 'groups', 'photos', 'events']:
+            username = username_match.group(1)
+            return f"https://facebook.com/{username}"
+            
+    # If we couldn't normalize it, return original
+    return url
+
+def is_social_media_url(url: str) -> bool:
+    """
+    Determine if a URL is for a social media platform that Zyte can handle better.
+    
+    Args:
+        url: The URL to check
+        
+    Returns:
+        True if it's a social media URL that should use Zyte, False otherwise
+    """
+    domain = extract_domain(url).lower()
+    
+    # Social platforms Zyte handles well (excluding LinkedIn)
+    return any(platform in domain for platform in ['instagram.com', 'twitter.com', 'x.com', 'facebook.com'])
+
 def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional[Dict[str, Any]]:
     """
     Scrape a URL using Firecrawl to extract information about the person.
+    If the URL is for a social media platform that Zyte handles better, use Zyte instead.
     If scraping fails and fallback_urls are provided, attempts to scrape those.
     
     Args:
@@ -210,6 +383,35 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
     Returns:
         Dictionary containing the scraped information or None if all scraping failed
     """
+    # Normalize social media URLs first
+    original_url = url
+    if is_social_media_url(url):
+        url = normalize_social_media_url(url)
+        if url != original_url:
+            print(f"Normalized primary URL: {original_url} → {url}")
+    
+    # Normalize fallback URLs if they're social media
+    normalized_fallbacks = []
+    if fallback_urls:
+        for fallback_url in fallback_urls:
+            if is_social_media_url(fallback_url):
+                normalized = normalize_social_media_url(fallback_url)
+                if normalized != fallback_url:
+                    print(f"Normalized fallback URL: {fallback_url} → {normalized}")
+                normalized_fallbacks.append(normalized)
+            else:
+                normalized_fallbacks.append(fallback_url)
+        fallback_urls = normalized_fallbacks
+            
+    # Check if this is a social media URL that Zyte can handle better
+    if is_social_media_url(url) and ZYTE_AVAILABLE:
+        print(f"Detected social media URL: {url} - using Zyte API instead of Firecrawl")
+        zyte_result = scrape_with_zyte(url)
+        if zyte_result:
+            return zyte_result
+        print("Zyte scraping failed, falling back to Firecrawl")
+    
+    # If not a social media URL or Zyte failed, proceed with Firecrawl
     global FIRECRAWL_AVAILABLE
     
     if not FIRECRAWL_AVAILABLE:
@@ -235,6 +437,15 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
             if not current_url or not current_url.startswith(('http://', 'https://')):
                 continue
                 
+            # Check if this fallback URL is a social media URL that Zyte can handle
+            # (We already normalized the URL earlier, so we can use it directly)
+            if current_url != url and is_social_media_url(current_url) and ZYTE_AVAILABLE:
+                print(f"Trying fallback social media URL with Zyte: {current_url}")
+                zyte_result = scrape_with_zyte(current_url)
+                if zyte_result:
+                    return zyte_result
+                print(f"Zyte failed for fallback URL, trying Firecrawl")
+                
             print(f"Scraping {current_url} with Firecrawl...")
             
             # Initialize Firecrawl
@@ -252,8 +463,10 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
             - Age or birthdate information
             - Organizations or companies they're affiliated with
             
+            IMPORTANT: Also include the entire article or page content in a field called "full_content" - this should contain all the textual information from the page that could be relevant to the person.
+            
             If the page is a social media profile, extract the profile owner's information.
-            If the page is a news article or blog post, extract information about the main person featured.
+            If the page is a news article or blog post, extract information about the main person featured AND include the full article text.
             If certain information isn't available, that's okay.
             
             IMPORTANT: Be sure to include ALL possible forms of the person's name that appear on the page.
@@ -719,23 +932,44 @@ def main(face_queue=None, shutdown_event=None):
     parser.add_argument('--force', action='store_true', help='Process all faces, even if previously processed')
     parser.add_argument('--token', help='FaceCheckID API token')
     parser.add_argument('--firecrawl-key', help='Firecrawl API key')
+    parser.add_argument('--zyte-api-key', help='Zyte API key for social media scraping')
     parser.add_argument('--timeout', type=int, default=300, help='Search timeout in seconds (default: 300)')
-    parser.add_argument('--skip-scrape', action='store_true', help='Skip web scraping even if Firecrawl is available')
+    parser.add_argument('--skip-scrape', action='store_true', help='Skip all web scraping')
+    parser.add_argument('--skip-social', action='store_true', help='Skip social media scraping with Zyte')
     parser.add_argument('--file', help='Process a specific face file instead of all unprocessed faces')
     parser.add_argument('--worker', action='store_true', help='Run in worker mode (requires parent process)')
     args = parser.parse_args()
     
     # Set up the API tokens
-    global APITOKEN, FIRECRAWL_API_KEY, FIRECRAWL_AVAILABLE
+    global APITOKEN, FIRECRAWL_API_KEY, FIRECRAWL_AVAILABLE, ZYTE_API_KEY, ZYTE_AVAILABLE
     if args.token:
         APITOKEN = args.token
     if args.firecrawl_key:
         FIRECRAWL_API_KEY = args.firecrawl_key
+    if args.zyte_api_key:
+        ZYTE_API_KEY = args.zyte_api_key
+        ZYTE_AVAILABLE = True
     
-    # Override Firecrawl availability if requested
+    # Override scraping availability if requested
     if args.skip_scrape:
         FIRECRAWL_AVAILABLE = False
-        print("Web scraping disabled by command line argument")
+        ZYTE_AVAILABLE = False
+        print("All web scraping disabled by command line argument")
+    elif args.skip_social:
+        ZYTE_AVAILABLE = False
+        print("Social media scraping with Zyte disabled by command line argument")
+        
+    # Print scraping capabilities
+    print("\nScraping capabilities:")
+    if FIRECRAWL_AVAILABLE:
+        print("- Firecrawl: ENABLED (for general websites and LinkedIn)")
+    else:
+        print("- Firecrawl: DISABLED")
+        
+    if ZYTE_AVAILABLE:
+        print("- Zyte API: ENABLED (for Instagram, Twitter, Facebook)")
+    else:
+        print("- Zyte API: DISABLED - set ZYTE_API_KEY in .env file to enable social media scraping")
     
     # Set up necessary directories
     setup_directories()

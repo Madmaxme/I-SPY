@@ -249,8 +249,8 @@ class BioGenerator:
     
     def _extract_person_data(self, analysis):
         """
-        Extract only the essential person data from an analysis entry
-        Skip page_content inside scraped_data as requested
+        Extract person data from an analysis entry
+        Now includes full_content for more detailed bio generation
         """
         if not analysis:
             return None
@@ -265,26 +265,24 @@ class BioGenerator:
         if analysis.get("scraped_data") and analysis["scraped_data"].get("person_info"):
             person_info = analysis["scraped_data"]["person_info"]
             
-            # Skip the page_content field as requested
-            if "page_content" in person_info:
-                del person_info["page_content"]
-                
+            # Include all person info fields including potential full_content
             # For nested person object
             if "person" in person_info:
-                # Make a copy without page_content
-                person_clean = {k: v for k, v in person_info["person"].items() 
-                               if k != "page_content"}
-                entry["person_info"] = {"person": person_clean}
+                entry["person_info"] = {"person": person_info["person"]}
             else:
-                # Make a copy without page_content
-                entry["person_info"] = {k: v for k, v in person_info.items() 
-                                       if k != "page_content"}
+                entry["person_info"] = person_info
+            
+            # Specifically check for full_content and make sure it's included
+            if "full_content" in person_info:
+                entry["full_content"] = person_info["full_content"]
+            elif "person" in person_info and "full_content" in person_info["person"]:
+                entry["full_content"] = person_info["person"]["full_content"]
         
-        # Extract text content if available (excluding page_content)
+        # Extract text content if available
         if analysis.get("scraped_data") and analysis["scraped_data"].get("text_content"):
             text = analysis["scraped_data"]["text_content"]
-            # Skip if it's just raw page content
-            if not text.startswith("<html") and len(text) < 1000:
+            # Keep this filter to avoid HTML content, but allow longer articles
+            if not text.startswith("<html"):
                 entry["text_content"] = text
         
         return entry
@@ -311,20 +309,72 @@ class BioGenerator:
         prompt = f"""
         You are a professional intelligence analyst creating a profile for {name} based on the following data.
         
-        All entries in the data are about the same person. Synthesize the information to create a comprehensive profile.
+        All entries in the data are about the same person. Follow these instructions exactly to create a consistent profile.
         
-        Create a well-formatted profile that includes:
-        1. Full name and professional title
-        2. Summary of who they are and what they're known for
-        3. Current and past organizations/roles
-        4. Notable achievements/work
-        5. Location information
-        6. Contact information (if available)
-        7. Personal relationships and connections (if available)
-        8. Any other relevant personal or professional details
+        VERY IMPORTANT: The data includes full article content in the "full_content" field. Use this to create a DETAILED SUMMARY
+        section, but keep all other sections concise and to the point.
         
-        Format the report for mobile viewing with clear sections. Focus on factual information and present it in a professional tone.
-        Do not include any AI-generated disclaimers or notes.
+        CRITICAL INSTRUCTION: If record data is provided (addresses, phone numbers, emails, education, work history, etc.), 
+        you MUST include ALL of this record data in the appropriate sections of the profile. Do not omit any record data.
+        
+        Create a profile with this exact template:
+
+        **{name} - Professional Profile**
+
+        **1. Full Name and Professional Title:**
+           - {name}, [Professional Title - keep to one line]
+
+        **2. Summary:**
+           [THIS SECTION SHOULD BE DETAILED AND IN-DEPTH - 3-5 comprehensive paragraphs with specific stories, events, 
+           achievements, and quotes from the full_content. Include specific dates, names, places, and detailed context 
+           about their life and career. This is the main section where you should be thorough and detailed.]
+
+        **3. Current and Past Organizations/Roles:**
+           - Current: [Organization/Role in one concise line]
+           - Past: [List ALL past roles from work_history, one line each]
+           [If unknown, write "No current role information available."]
+
+        **4. Education:**
+           - [List ALL education entries from education_history, one line each]
+           [If unknown, write "No education information available."]
+
+        **5. Skills and Certifications:**
+           - Skills: [List all skills]
+           - Certifications: [List all certifications]
+           - Languages: [List all languages]
+           [If unknown, write "No skills or certifications information available."]
+
+        **6. Location Information:**
+           - [List ALL addresses from record data, one per line]
+           [If unknown, write "No location information available."]
+
+        **7. Contact Information:**
+           - Phone: [List ALL phone numbers from record data, one per line]
+           - Email: [List ALL email addresses from record data, one per line]
+           - Social: [List ALL social profiles from record data, one per line]
+           [If unknown, write "No contact information available."]
+
+        **8. Personal Connections:**
+           - Family: [List all relatives from record data]
+           - Associates: [List other known connections]
+           [If unknown, write "No relationship information available."]
+
+        **9. Notable Achievements:**
+           - [Achievement 1 - one concise line]
+           - [Achievement 2 - one concise line]
+           [If unknown, write "No achievement information available."]
+
+        **10. Notable Quotes:**
+           - "[Direct quote if available]"
+           [If none, write "No notable quotes available."]
+
+        Use facts only - no speculation outside the summary section. Be extremely concise in all sections except the Summary.
+        Follow this template structure exactly without deviation. The Summary should contain all the rich details and depth,
+        while other sections should be brief bullet points.
+        
+        AGAIN, I MUST EMPHASIZE: If record data is provided (under "personal_details"), you MUST list ALL addresses, 
+        phone numbers, emails, education history, work history, and relationships in the appropriate sections. Do not 
+        summarize or omit any record details, even if they seem redundant.
         """
         
         # Add the identity data section
@@ -370,7 +420,8 @@ class BioGenerator:
             print(f"[BIOGEN] Estimated prompt tokens: {int(estimated_tokens)}")
             
             # If potentially too large, apply emergency fallback
-            if estimated_tokens > 15000:  # Leave room for response
+            # Significantly increased to accommodate the full_content field and allow for detailed narratives
+            if estimated_tokens > 40000:  # GPT-4 Turbo can handle up to ~128K tokens
                 print("[BIOGEN] Prompt too large, using emergency fallback...")
                 
                 # Use our canonical name approach even for the fallback
@@ -406,12 +457,62 @@ class BioGenerator:
                         if details.get("phone_numbers") and len(details["phone_numbers"]) > 0:
                             critical_info["phone"] = details["phone_numbers"][0]["number"]
                     
-                    # Very simplified prompt
+                    # Fallback prompt following the exact template
                     prompt = f"""
-                    Create a brief professional bio for {name} based on this limited data:
+                    Create a profile for {name} based on this limited data:
                     {json.dumps(critical_info, indent=2)}
                     
-                    Format the bio for mobile viewing with clear sections.
+                    Even with limited information, follow this EXACT template:
+
+                    **{name} - Professional Profile**
+
+                    **1. Full Name and Professional Title:**
+                       - {name}, [Professional Title if known, otherwise just the name]
+
+                    **2. Summary:**
+                       [Make this section as detailed as possible with the available information. 
+                       If very limited data, still write at least 1-2 paragraphs synthesizing what is known.]
+
+                    **3. Current and Past Organizations/Roles:**
+                       - Current: [Organization/Role in one concise line]
+                       - Past: [List ALL past roles from work_history, one line each]
+                       [If unknown, write "No current role information available."]
+
+                    **4. Education:**
+                       - [List ALL education entries from education_history, one line each]
+                       [If unknown, write "No education information available."]
+
+                    **5. Skills and Certifications:**
+                       - Skills: [List all skills]
+                       - Certifications: [List all certifications]
+                       - Languages: [List all languages]
+                       [If unknown, write "No skills or certifications information available."]
+
+                    **6. Location Information:**
+                       - [List ALL addresses from record data, one per line]
+                       [If unknown, write "No location information available."]
+
+                    **7. Contact Information:**
+                       - Phone: [List ALL phone numbers from record data, one per line]
+                       - Email: [List ALL email addresses from record data, one per line]
+                       - Social: [List ALL social profiles from record data, one per line]
+                       [If unknown, write "No contact information available."]
+
+                    **8. Personal Connections:**
+                       - Family: [List all relatives from record data]
+                       - Associates: [List other known connections]
+                       [If unknown, write "No relationship information available."]
+
+                    **9. Notable Achievements:**
+                       - [Achievement if known - one concise line]
+                       [If unknown, write "No achievement information available."]
+
+                    **10. Notable Quotes:**
+                       - "[Direct quote if available]"
+                       [If none, write "No notable quotes available."]
+                    
+                    IMPORTANT: Include ALL record data in the appropriate sections. Do not omit any record details.
+                    Follow this template structure exactly. The Summary should be the most detailed section, everything else should be brief.
                     """
                     
                     print(f"[BIOGEN] Emergency fallback prompt tokens: {int(len(prompt) / 4)}")
@@ -420,11 +521,11 @@ class BioGenerator:
             response = self.client.chat.completions.create(
                 model="gpt-4-turbo", # or another appropriate model
                 messages=[
-                    {"role": "system", "content": "You are a professional intelligence analyst creating biographical profiles from search data."},
+                    {"role": "system", "content": "You are a professional intelligence analyst creating biographical profiles following an exact template. The Summary section should be detailed while all other sections must be concise bullet points. Always include placeholder text for missing information. CRITICAL: You MUST include ALL record data provided in the appropriate sections - all addresses, phone numbers, emails, work history, education history, etc. Do not omit any information from the records data."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,  # Lower temperature for more factual responses
-                max_tokens=2000   # Adjust as needed for report length
+                temperature=0.2,  # Low temperature for consistent template adherence
+                max_tokens=4000   # Allows for detailed summary while keeping other sections concise
             )
             
             # Extract and return the response text
@@ -435,17 +536,46 @@ class BioGenerator:
             traceback.print_exc()
             return None
     
-    def save_report(self, bio, output_dir, filename="bio.txt"):
-        """Save the generated bio to a text file in the specified directory"""
+    def save_report(self, bio, output_dir, filename="bio.txt", identity_analyses=None):
+        """
+        Save the generated bio to a text file in the specified directory
+        and append image sources from identity_analyses
+        """
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
         
         # Full path to the bio file
         filepath = os.path.join(output_dir, filename)
         
-        # Save the report
+        # Save the initial bio
         with open(filepath, 'w') as f:
             f.write(bio)
+            
+        # Append image sources section if identity_analyses is provided
+        if identity_analyses:
+            try:
+                with open(filepath, 'a') as f:
+                    # Add image sources section
+                    f.write("\n\n**11. Image Sources:**\n")
+                    
+                    # Track if we found any image sources
+                    found_images = False
+                    
+                    # Process each analysis entry
+                    for i, analysis in enumerate(identity_analyses, 1):
+                        # Add original URL with match score
+                        if analysis.get('url'):
+                            score = analysis.get('score', 0)  # Get score or default to 0
+                            f.write(f"   - Source {i}: {analysis['url']} (Match score: {score})\n")
+                            found_images = True
+                    
+                    # If no images were found, add placeholder
+                    if not found_images:
+                        f.write("   - No image sources available.\n")
+                    
+                print(f"[BIOGEN] Added image sources to bio file: {filepath}")
+            except Exception as e:
+                print(f"[BIOGEN] Error appending image sources: {e}")
         
         return filepath
     
@@ -498,8 +628,8 @@ class BioGenerator:
             bio = self.generate_bio(data["identity_analyses"], record_analyses)
             
             if bio:
-                # Save the report to the person directory
-                filepath = self.save_report(bio, person_dir, "bio.txt")
+                # Save the report to the person directory, including image sources
+                filepath = self.save_report(bio, person_dir, "bio.txt", data["identity_analyses"])
                 print(f"[BIOGEN] Bio generated and saved to: {filepath}")
                 
                 # Update the main JSON file to include the bio
@@ -543,8 +673,8 @@ class BioGenerator:
             bio = self.generate_bio(data["identity_analyses"])
             
             if bio:
-                # Save the report in the same directory as the JSON file
-                filepath = self.save_report(bio, result_dir, "bio.txt")
+                # Save the report in the same directory as the JSON file, including image sources
+                filepath = self.save_report(bio, result_dir, "bio.txt", data["identity_analyses"])
                 print(f"[BIOGEN] Bio generated and saved to: {filepath}")
                 return filepath
             else:
