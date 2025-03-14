@@ -1001,7 +1001,7 @@ class RecordChecker:
     def process_result_directory(self, person_dir):
         """
         Process a face search result directory, add record data to the results JSON if found,
-        and generate a records report
+        but do not generate a separate records report file
         
         Args:
             person_dir: Path to the person's result directory
@@ -1022,13 +1022,15 @@ class RecordChecker:
             result_files.sort(key=lambda f: os.path.getmtime(os.path.join(person_dir, f)), reverse=True)
             json_file = os.path.join(person_dir, result_files[0])
             
-            # Check if bio.txt exists
-            bio_file = os.path.join(person_dir, "bio.txt")
+            # Check for bio files (may be named differently now)
             bio_data = None
-            if os.path.exists(bio_file):
-                with open(bio_file, 'r') as f:
-                    bio_data = f.read()
-                print(f"[RECORDCHECKER] Found bio file: {bio_file}")
+            for file in os.listdir(person_dir):
+                if file.startswith("bio_") and file.endswith(".txt"):
+                    bio_file = os.path.join(person_dir, file)
+                    with open(bio_file, 'r') as f:
+                        bio_data = f.read()
+                    print(f"[RECORDCHECKER] Found bio file: {bio_file}")
+                    break
             
             # Load the identity data
             with open(json_file, 'r') as f:
@@ -1074,12 +1076,6 @@ class RecordChecker:
                 # Write the updated JSON back to the file
                 with open(json_file, 'w') as f:
                     json.dump(data, f, indent=2)
-                
-                # Save an empty report indicating no results
-                empty_report = "## PERSONAL RECORDS REPORT\n\nNo additional records found for this individual."
-                empty_filepath = os.path.join(person_dir, "records.txt")
-                with open(empty_filepath, 'w') as f:
-                    f.write(empty_report)
                     
                 print(f"[RECORDCHECKER] Added empty record data to results JSON: {json_file}")
                 return json_file
@@ -1100,32 +1096,17 @@ class RecordChecker:
             # Add record data to the main results JSON
             data["record_analyses"] = record_data
             
+            # Include searched name(s) explicitly for reference
+            data["record_search_names"] = search_params.get("name", "Unknown")
+            
             # Write the updated JSON back to the file
             with open(json_file, 'w') as f:
                 json.dump(data, f, indent=2)
             
             print(f"[RECORDCHECKER] Added record data to results JSON: {json_file}")
             
-            # Check if we found any useful information
-            has_useful_info = any(len(personal_details[key]) > 0 for key in personal_details)
-            if not has_useful_info:
-                print("[RECORDCHECKER] No useful personal details found")
-                
-                # Save an empty report indicating no results
-                empty_report = "## PERSONAL RECORDS REPORT\n\nNo additional records found for this individual."
-                empty_filepath = os.path.join(person_dir, "records.txt")
-                with open(empty_filepath, 'w') as f:
-                    f.write(empty_report)
-            else:
-                # Generate a records report
-                report = self.generate_records_report(personal_details)
-                
-                # Save the report to a file
-                filepath = os.path.join(person_dir, "records.txt")
-                with open(filepath, 'w') as f:
-                    f.write(report)
-                
-                print(f"[RECORDCHECKER] Records report saved to: {filepath}")
+            # Note: No longer creating a separate records.txt file
+            # Records data is available in the JSON and will be included in the bio
             
             return json_file
                 

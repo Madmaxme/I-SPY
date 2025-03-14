@@ -22,14 +22,11 @@ logger = logging.getLogger("Backend")
 app = Flask(__name__)
 
 # Create directories for data storage
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploaded_faces")
+import tempfile
+UPLOAD_FOLDER = tempfile.mkdtemp()  # Create a temporary directory for uploads that will be cleaned up
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "face_search_results")
 
-# Create directories if they don't exist
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-    print(f"Created upload folder: {UPLOAD_FOLDER}")
-
+# Create results directory if it doesn't exist
 if not os.path.exists(RESULTS_DIR):
     os.makedirs(RESULTS_DIR)
     print(f"Created results directory: {RESULTS_DIR}")
@@ -134,6 +131,14 @@ def process_face_thread(face_path):
             logger.error(f"Failed to process: {os.path.basename(face_path)}")
     except Exception as e:
         logger.error(f"Error processing face: {str(e)}")
+    finally:
+        # Clean up the uploaded file after processing
+        try:
+            if os.path.exists(face_path):
+                os.remove(face_path)
+                logger.info(f"Removed temporary file: {os.path.basename(face_path)}")
+        except Exception as e:
+            logger.error(f"Error removing temporary file: {str(e)}")
 
 def main():
     """Main function to start the backend server"""

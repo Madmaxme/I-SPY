@@ -287,7 +287,7 @@ class BioGenerator:
         
         return entry
     
-    def prepare_prompt(self, identity_analyses, record_analyses=None):
+    def prepare_prompt(self, identity_analyses, record_analyses=None, record_search_names=None):
         """
         Prepare the prompt for OpenAI API using identity and record analyses
         Uses the improved frequency-based name selection
@@ -295,6 +295,7 @@ class BioGenerator:
         Args:
             identity_analyses: List of identity analysis results from face search
             record_analyses: Optional record analysis data from RecordChecker
+            record_search_names: Optional name(s) used for record search
         
         Returns:
             Formatted prompt string
@@ -306,6 +307,15 @@ class BioGenerator:
         canonical_name = self.extract_name(identity_analyses)
         name = canonical_name if canonical_name else "the subject"
         
+        # Record search name info for reference
+        record_search_info = ""
+        if record_search_names:
+            if isinstance(record_search_names, list):
+                search_names_str = ", ".join(record_search_names)
+                record_search_info = f"\n\nRecord search was performed using these name(s): {search_names_str}"
+            else:
+                record_search_info = f"\n\nRecord search was performed using name: {record_search_names}"
+        
         prompt = f"""
         You are a professional intelligence analyst creating a profile for {name} based on the following data.
         
@@ -315,7 +325,7 @@ class BioGenerator:
         section, but keep all other sections concise and to the point.
         
         CRITICAL INSTRUCTION: If record data is provided (addresses, phone numbers, emails, education, work history, etc.), 
-        you MUST include ALL of this record data in the appropriate sections of the profile. Do not omit any record data.
+        you MUST include ALL of this record data in the appropriate sections of the profile. Do not omit any record data.{record_search_info}
         
         Create a profile with this exact template:
 
@@ -399,18 +409,19 @@ class BioGenerator:
         # Return the prompt
         return prompt
     
-    def generate_bio(self, identity_analyses, record_analyses=None):
+    def generate_bio(self, identity_analyses, record_analyses=None, record_search_names=None):
         """
         Generate a bio using OpenAI's API with both identity and record data
         
         Args:
             identity_analyses: List of identity analysis results
             record_analyses: Optional record analysis data
+            record_search_names: Optional name(s) used for record search
             
         Returns:
             Generated biographical text
         """
-        prompt = self.prepare_prompt(identity_analyses, record_analyses)
+        prompt = self.prepare_prompt(identity_analyses, record_analyses, record_search_names)
         
         try:
             # Estimate token count (rough approximation: 1 token ≈ 4 chars for English text)
@@ -438,6 +449,10 @@ class BioGenerator:
                         "source": first_match.get("domain", "unknown source")
                     }
                     
+                    # Add record search names if available
+                    if record_search_names:
+                        critical_info["record_search_names"] = record_search_names
+                    
                     if first_match.get("scraped_data") and first_match["scraped_data"].get("person_info"):
                         person_info = first_match["scraped_data"]["person_info"]
                         if "occupation" in person_info:
@@ -457,10 +472,19 @@ class BioGenerator:
                         if details.get("phone_numbers") and len(details["phone_numbers"]) > 0:
                             critical_info["phone"] = details["phone_numbers"][0]["number"]
                     
+                    # Generate record search info for fallback prompt
+                    record_search_info = ""
+                    if record_search_names:
+                        if isinstance(record_search_names, list):
+                            search_names_str = ", ".join(record_search_names)
+                            record_search_info = f"\n\nRecord search was performed using these name(s): {search_names_str}"
+                        else:
+                            record_search_info = f"\n\nRecord search was performed using name: {record_search_names}"
+                    
                     # Fallback prompt following the exact template
                     prompt = f"""
                     Create a profile for {name} based on this limited data:
-                    {json.dumps(critical_info, indent=2)}
+                    {json.dumps(critical_info, indent=2)}{record_search_info}
                     
                     Even with limited information, follow this EXACT template:
 
@@ -568,6 +592,10 @@ class BioGenerator:
                             score = analysis.get('score', 0)  # Get score or default to 0
                             f.write(f"   - Source {i}: {analysis['url']} (Match score: {score})\n")
                             found_images = True
+                            
+                            # Note about thumbnail
+                            if analysis.get('thumbnail_base64'):
+                                f.write(f"     (Thumbnail available in JSON data)\n")
                     
                     # If no images were found, add placeholder
                     if not found_images:
@@ -613,6 +641,8 @@ class BioGenerator:
             # Sort by modification time (newest first)
             result_files.sort(key=lambda f: os.path.getmtime(os.path.join(person_dir, f)), reverse=True)
             json_file = os.path.join(person_dir, result_files[0])
+            json_filename = os.path.basename(json_file)
+            results_timestamp = json_filename.replace("results_", "").replace(".json", "")
             
             print(f"[BIOGEN] Using results file: {json_file}")
             
@@ -623,18 +653,31 @@ class BioGenerator:
             record_analyses = data.get("record_analyses")
             if record_analyses:
                 print(f"[BIOGEN] Found record analyses data from {record_analyses.get('provider', 'unknown')}")
+                # Extract search parameters (names) for reference
+                search_params = record_analyses.get("search_params", {})
+                search_names = search_params.get("name", "Unknown")
+                print(f"[BIOGEN] Record search used name(s): {search_names}")
+                # Add this to the data for inclusion in bio
+                data["record_search_names"] = search_names
+            
+            # Get record search names if available
+            record_search_names = data.get("record_search_names")
             
             # Generate the bio with both identity and record data
-            bio = self.generate_bio(data["identity_analyses"], record_analyses)
+            bio = self.generate_bio(data["identity_analyses"], record_analyses, record_search_names)
             
             if bio:
+                # Create matched bio filename based on results JSON
+                bio_filename = f"bio_{results_timestamp}.txt"
+                
                 # Save the report to the person directory, including image sources
-                filepath = self.save_report(bio, person_dir, "bio.txt", data["identity_analyses"])
+                filepath = self.save_report(bio, person_dir, bio_filename, data["identity_analyses"])
                 print(f"[BIOGEN] Bio generated and saved to: {filepath}")
                 
                 # Update the main JSON file to include the bio
                 data["bio_text"] = bio
                 data["bio_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                data["bio_file"] = bio_filename
                 
                 # Write the updated JSON back to the file
                 with open(json_file, 'w') as f:

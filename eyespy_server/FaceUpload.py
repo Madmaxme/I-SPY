@@ -25,7 +25,7 @@ except ImportError:
     print("Continuing without Firecrawl integration...")
 
 # FaceCheckID API Configuration
-TESTING_MODE = False  # Set to False for production use
+TESTING_MODE = True  # Set to False for production use
 APITOKEN = os.getenv('FACECHECK_API_TOKEN')
 
 # Firecrawl API Configuration
@@ -50,21 +50,12 @@ def setup_directories():
         os.makedirs(RESULTS_DIR)
         print(f"Created results directory: {RESULTS_DIR}")
     
-    # Create a temporary directory for storing images before organizing
-    temp_images_dir = os.path.join(RESULTS_DIR, "temp_images")
-    if not os.path.exists(temp_images_dir):
-        os.makedirs(temp_images_dir)
-        
     # Create an 'unknown' directory for results that don't match anyone
     unknown_dir = os.path.join(RESULTS_DIR, "unknown")
     if not os.path.exists(unknown_dir):
         os.makedirs(unknown_dir)
         
-    unknown_images_dir = os.path.join(unknown_dir, "images")
-    if not os.path.exists(unknown_images_dir):
-        os.makedirs(unknown_images_dir)
-        
-    return temp_images_dir
+    return None  # No longer returning temp_images_dir since we store base64 directly
 
 def load_processed_faces():
     """Load the list of already processed face files"""
@@ -131,7 +122,7 @@ def search_by_face(image_file, timeout=300):
         'id_search': id_search,
         'with_progress': True,
         'status_only': False,
-        'demo': TESTING_MODE
+        'demo': TESTING_MODE  # This is the key change - using the TESTING_MODE flag
     }
     
     start_time = time.time()
@@ -159,8 +150,6 @@ def search_by_face(image_file, timeout=300):
             print(f"{response['message']} progress: {current_progress}%")
             last_progress = current_progress
         
-        # Sleep for a bit to avoid hammering the API
-        time.sleep(1)
 
 def save_thumbnail_from_base64(base64_str, filename):
     """Save Base64 encoded image to file"""
@@ -610,22 +599,9 @@ def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images
     url = result.get('url', '')
     score = result.get('score', 0)
     
-    # Save the thumbnail image
+    # Store the base64 image data directly
     base64_str = result.get('base64', '')
-    thumbnail_path = None
-    
-    if base64_str:
-        # If no specific directory is provided, use the default temporary directory
-        if not temp_images_dir:
-            # Make sure the images directory exists
-            temp_images_dir = os.path.join(RESULTS_DIR, "temp_images")
-            if not os.path.exists(temp_images_dir):
-                os.makedirs(temp_images_dir)
-            
-        thumbnail_filename = f"result_{result_index}_{result.get('guid', 'unknown')}.webp"
-        thumbnail_path = os.path.join(temp_images_dir, thumbnail_filename)
-        if save_thumbnail_from_base64(base64_str, thumbnail_path):
-            print(f"Saved temporary thumbnail image")
+    thumbnail_path = None  # Keep this for backward compatibility
     
     # Get identity sources
     sources = get_identity_sources(url)
@@ -639,7 +615,8 @@ def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images
         'url': url,
         'score': score,
         'source_type': source_type,
-        'thumbnail_path': thumbnail_path,
+        'thumbnail_base64': base64_str,  # Store base64 directly in the JSON
+        'thumbnail_path': None,  # Keep field for backward compatibility
         'scraped_data': scraped_data
     }
     
@@ -710,9 +687,12 @@ def process_single_face(image_file, timeout=300):
     print(f"Processing: {os.path.basename(image_file)}")
     
     try:
-        # Set up directories and get temp directory
-        temp_images_dir = setup_directories()
-        
+        # Read and encode the source image as base64
+        with open(image_file, 'rb') as img_file:
+            source_image_data = img_file.read()
+            import base64
+            source_image_base64 = base64.b64encode(source_image_data).decode('utf-8')
+            
         # Search for the face with timeout
         error, search_results = search_by_face(image_file, timeout=timeout)
         
@@ -728,14 +708,18 @@ def process_single_face(image_file, timeout=300):
                 # Collect fallback URLs from other results
                 fallback_urls = collect_fallback_urls(search_results, j-1)
                 
-                # Analyze this result with temp directory and fallback URLs
-                analysis = analyze_search_result(result, j, temp_images_dir, fallback_urls)
+                # Analyze this result with base64 data stored directly
+                analysis = analyze_search_result(result, j, None, fallback_urls)
                 identity_analyses.append(analysis)
+            
+            # Generate timestamp for the results
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # Save the results with enhanced information
             results_data = {
-                "source_image": image_file,
-                "search_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "source_image_path": image_file,  # Keep for backward compatibility
+                "source_image_base64": source_image_base64,  # Store source image as base64
+                "search_timestamp": timestamp,
                 "original_results": search_results,
                 "identity_analyses": identity_analyses
             }
@@ -749,27 +733,6 @@ def process_single_face(image_file, timeout=300):
             if not os.path.exists(person_dir):
                 os.makedirs(person_dir)
                 print(f"Created results directory: {person_dir}")
-            
-            # Create an images subfolder for the results
-            images_dir = os.path.join(person_dir, "images")
-            if not os.path.exists(images_dir):
-                os.makedirs(images_dir)
-            
-            # Move result thumbnails to the folder
-            for i, analysis in enumerate(identity_analyses):
-                if analysis.get('thumbnail_path'):
-                    # Copy the thumbnail to the folder
-                    original_thumb = analysis['thumbnail_path']
-                    if os.path.exists(original_thumb):
-                        new_thumb_name = f"match_{i+1}_{os.path.basename(original_thumb)}"
-                        new_thumb_path = os.path.join(images_dir, new_thumb_name)
-                        try:
-                            import shutil
-                            shutil.copy2(original_thumb, new_thumb_path)
-                            # Update the path in the analysis
-                            analysis['thumbnail_path'] = new_thumb_path
-                        except Exception as e:
-                            print(f"Error copying thumbnail: {e}")
             
             # Generate result filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -786,16 +749,6 @@ def process_single_face(image_file, timeout=300):
                 processed_faces.append(image_file)
                 save_processed_faces(processed_faces)
             
-            # Clean up temp directory if it exists
-            try:
-                import shutil
-                if os.path.exists(temp_images_dir):
-                    shutil.rmtree(temp_images_dir)
-                    # Recreate it for future use
-                    os.makedirs(temp_images_dir)
-            except Exception as e:
-                print(f"Warning: Could not clean up temporary files: {e}")
-                
             return True
         else:
             print(f"Search failed: {error}")
