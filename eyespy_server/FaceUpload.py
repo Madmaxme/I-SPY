@@ -10,6 +10,10 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import urllib.parse
 from dotenv import load_dotenv
+import openai
+import traceback
+
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,7 +29,7 @@ except ImportError:
     print("Continuing without Firecrawl integration...")
 
 # FaceCheckID API Configuration
-TESTING_MODE = True  # Set to False for production use
+TESTING_MODE = False  # Set to False for production use
 APITOKEN = os.getenv('FACECHECK_API_TOKEN')
 
 # Firecrawl API Configuration
@@ -34,6 +38,10 @@ FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 # Zyte API Configuration
 ZYTE_API_KEY = os.getenv('ZYTE_API_KEY')
 ZYTE_AVAILABLE = ZYTE_API_KEY is not None and ZYTE_API_KEY != ''
+
+# OPEN API KEY
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+openai.api_key = OPENAI_API_KEY
 
 # Default directory for detected faces (should match FotoRec.py save_dir)
 DEFAULT_FACES_DIR = "detected_faces"
@@ -75,6 +83,7 @@ def save_processed_faces(processed_faces):
             json.dump(processed_faces, f)
     except Exception as e:
         print(f"Error saving processed faces file: {e}")
+        
 
 def get_unprocessed_faces(faces_dir, processed_faces):
     """Get list of face image files that haven't been processed yet"""
@@ -372,6 +381,21 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
     Returns:
         Dictionary containing the scraped information or None if all scraping failed
     """
+    
+
+    if "linkedin.com/in/" in url.lower():
+        print(f"Detected LinkedIn URL: {url} - attempting LLM name extraction")
+        linkedin_data = extract_name_from_linkedin_url(url)
+        if linkedin_data:
+            print(f"Successfully extracted name via LLM from LinkedIn URL")
+            return linkedin_data
+        print("LinkedIn URL name extraction failed, continuing with other methods")
+    
+    # If URL is LinkedIn but LLM extraction failed, don't try to scrape with Firecrawl
+    if "linkedin.com/in/" in url.lower():
+        print(f"Skipping Firecrawl scraping for LinkedIn URL: {url}")
+        return None
+
     # Normalize social media URLs first
     original_url = url
     if is_social_media_url(url):
@@ -399,6 +423,7 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
         if zyte_result:
             return zyte_result
         print("Zyte scraping failed, falling back to Firecrawl")
+        
     
     # If not a social media URL or Zyte failed, proceed with Firecrawl
     global FIRECRAWL_AVAILABLE
@@ -496,6 +521,99 @@ def scrape_with_firecrawl(url: str, fallback_urls: List[str] = None) -> Optional
     print("All scraping attempts failed")
     return None
 
+def extract_name_from_linkedin_url(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract a person's name from a LinkedIn URL using OpenAI's LLM
+    
+    Args:
+        url: LinkedIn profile URL
+        
+    Returns:
+        Dictionary with name information or None if extraction failed
+    """
+    # Verify it's a LinkedIn URL
+    if "linkedin.com/in/" not in url.lower():
+        return None
+    
+    # Extract the URL slug (part after /in/)
+    try:
+        match = re.search(r'linkedin\.com/in/([^/\?]+)', url)
+        if not match:
+            return None
+            
+        slug = match.group(1)
+        
+        # Skip if it's not a name-based URL (like numeric IDs)
+        if slug.isdigit() or not slug:
+            return None
+            
+        print(f"Using OpenAI API to extract name from LinkedIn slug: {slug}")
+        
+        # Create a prompt for name extraction
+        prompt = f"""
+        Extract the first name and last name from this LinkedIn profile URL: {url}
+        The name should be extracted from the URL slug: {slug}
+        
+        Return JSON format only:
+        {{
+            "first_name": "FirstName",
+            "last_name": "LastName"
+        }}
+        """
+        
+        # Initialize the OpenAI client properly for v1.0+
+        client = openai.OpenAI()
+        
+        # Call OpenAI API with the new format
+        response = client.chat.completions.create(
+            model="gpt-4-turbo", 
+            messages=[
+                {"role": "system", "content": "You extract names from LinkedIn URLs."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1  # Low temperature for consistent extraction
+        )
+        
+        # Process response using the new response format
+        content = response.choices[0].message.content
+        print(f"OpenAI API response: {content}")
+        extracted_data = json.loads(content)
+        
+        # Validate response
+        if "first_name" in extracted_data and "last_name" in extracted_data:
+            first_name = extracted_data["first_name"]
+            last_name = extracted_data["last_name"]
+            full_name = f"{first_name} {last_name}"
+            
+            print(f"Successfully extracted name from LinkedIn URL: {full_name}")
+            
+            # Create structured data to match existing pipeline
+            return {
+                'person_info': {
+                    'person': {
+                        'fullName': full_name,
+                        'firstName': first_name,
+                        'lastName': last_name
+                    }
+                },
+                'source_url': url,
+                'candidate_names': [{
+                    "name": full_name,
+                    "source": "linkedin_url_llm",
+                    "url": url,
+                    "confidence": 0.75  # Good confidence for LLM extraction
+                }]
+            }
+        
+        # If we get here, something went wrong with the parsing
+        print(f"Failed to extract name from LinkedIn URL with LLM: {url}")
+        return None
+            
+    except Exception as e:
+        print(f"Error extracting name from LinkedIn URL: {e}")
+        traceback.print_exc()  # Add this for better debugging
+        return None
+    
 def extract_name_candidates(json_data: Dict, page_content: str, source_url: str) -> List[Dict[str, Any]]:
     """
     Extract all potential name candidates from scraped data
