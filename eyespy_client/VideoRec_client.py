@@ -38,7 +38,7 @@ backend_url = os.environ.get("EYESPY_BACKEND_URL", DEFAULT_BACKEND_URL)
 
 # Initialize variables
 last_detection_time = 0
-detection_throttle = 1.0  # Seconds between detections
+detection_throttle = 3.0  # Seconds between detections
 processing_enabled = True  # Flag to enable/disable face processing
 
 # Playback speed control (lower = slower, higher = faster)
@@ -100,15 +100,15 @@ def ensure_collection_exists():
         return False
     
 class FaceTracker:
-    def __init__(self, stability_threshold=2, position_tolerance=0.2):
+    def __init__(self, stability_threshold=4, position_tolerance=0.15):
         """
         Initialize face tracker with more lenient parameters
         
         Args:
             stability_threshold: Number of consecutive frames a face must appear to be considered stable
-                                (reduced to 2 from 5)
+                                (reduced to 4 from 2)
             position_tolerance: Maximum change in normalized position to be considered the same face
-                               (increased to 0.2 from 0.15)
+                               (increased to 0.15 from 0.2)
         """
         self.tracked_faces = {}  # Dictionary of tracked faces
         self.next_face_id = 0  # Counter for generating face IDs
@@ -405,13 +405,13 @@ def detect_faces_aws(frame):
         
         for face_detail in response['FaceDetails']:
             # Skip only extremely low confidence detections
-            if face_detail['Confidence'] < 60:  # Very low threshold
+            if face_detail['Confidence'] < 85:  
                 rejected_faces["confidence"] += 1
                 continue
             
             # Skip only extremely extreme poses
             pose = face_detail['Pose']
-            if abs(pose['Yaw']) > 60 or abs(pose['Pitch']) > 45:  # Very lenient
+            if abs(pose['Yaw']) > 60 or abs(pose['Pitch']) > 20:  
                 rejected_faces["pose"] += 1
                 continue
             
@@ -420,6 +420,11 @@ def detect_faces_aws(frame):
             # Check if we have at least one basic facial feature (rather than landmarks)
             if 'Landmarks' in face_detail and len(face_detail['Landmarks']) < 1:
                 rejected_faces["landmarks"] += 1
+                continue
+
+            quality = face_detail['Quality']
+            if quality.get('Brightness', 0) < 40 or quality.get('Sharpness', 0) < 40:
+                rejected_faces["quality"] += 1
                 continue
                 
             # Get bounding box
@@ -434,7 +439,7 @@ def detect_faces_aws(frame):
             
             # Very minimal size filtering - only reject extremely tiny faces
             face_height = bottom - top
-            if face_height < 20:  # Absolute pixel minimum rather than percentage
+            if face_height < 80:  # Absolute pixel minimum rather than percentage
                 rejected_faces["size"] += 1
                 continue
             
@@ -499,13 +504,13 @@ def is_new_face_aws(face_img):
     img_bytes = img_encoded.tobytes()
     
     try:
-        # Search for face in collection with lower similarity threshold (60%)
+        # Search for face in collection with similarity threshold of 80%
         print(f"Searching for face in collection {COLLECTION_ID}...")
         response = rekognition.search_faces_by_image(
             CollectionId=COLLECTION_ID,
             Image={'Bytes': img_bytes},
-            FaceMatchThreshold=60.0,  # Lower threshold to detect more similar faces
-            MaxFaces=5  # Check for more potential matches
+            FaceMatchThreshold=80.0, 
+            MaxFaces=3  
         )
         
         # If matches found, not a new face
@@ -522,13 +527,32 @@ def is_new_face_aws(face_img):
             
             return False, matched_face_id
         
-        # If no matches, index this new face
-        print("No match found. Indexing new face...")
+        # No matches found, check face quality before indexing
+        # Detect faces with minimum quality requirements first
+        face_detect_response = rekognition.detect_faces(
+            Image={'Bytes': img_bytes},
+            Attributes=['ALL']
+        )
+        
+        # Check if any faces were detected and if they pass confidence threshold
+        if not face_detect_response['FaceDetails']:
+            print("No faces detected in image")
+            return True, None
+        
+        face_detail = face_detect_response['FaceDetails'][0]  # Get the first face
+        
+        # Apply confidence threshold
+        if face_detail['Confidence'] < 85:
+            print(f"Face confidence too low: {face_detail['Confidence']:.1f}% (threshold: 85%)")
+            return True, None
+            
+        # Now we know this is a new face that passes quality checks, so index it
+        print("No match found and face passes quality checks. Indexing new face...")
         index_response = rekognition.index_faces(
             CollectionId=COLLECTION_ID,
             Image={'Bytes': img_bytes},
             MaxFaces=1,
-            QualityFilter='LOW',  # Using LOW for lenient quality filtering
+            QualityFilter='MEDIUM', 
             DetectionAttributes=['DEFAULT']
         )
         
@@ -626,9 +650,13 @@ def save_face(frame, bbox):
     # Extract face from bounding box
     try:
         left, top, right, bottom = bbox
-        
-        # Add margin to face crop
-        margin = 30
+
+
+         # Calculate face dimensions
+        face_width = right - left
+        face_height = bottom - top
+
+        margin = min(30, int(face_width * 0.2))  
         top = max(0, top - margin)
         bottom = min(frame.shape[0], bottom + margin)
         left = max(0, left - margin)
@@ -638,7 +666,7 @@ def save_face(frame, bbox):
         face_image = frame[top:bottom, left:right]
         
         # Check if too small or invalid - use a smaller minimum size
-        if face_image.shape[0] < 30 or face_image.shape[1] < 30:
+        if face_image.shape[0] < 100 or face_image.shape[1] < 100:
             print(f"Face too small: {face_image.shape[0]}x{face_image.shape[1]} pixels")
             return None
         
@@ -820,7 +848,7 @@ def main(server_url=None, video_file=None, display_time=None, clear_collection=F
     cv2.resizeWindow("Face Monitoring", 800, 600)
     
     # Variables for processing - more balanced settings
-    process_every_n = 15  # Process every 15th frame (balance between frequency and cost)
+    process_every_n = 5  # Process every 15th frame (balance between frequency and cost)
     frame_counter = 0
     face_detection_count = 0
     
@@ -828,7 +856,7 @@ def main(server_url=None, video_file=None, display_time=None, clear_collection=F
     face_detector = FaceDetector(face_display_time=face_display_time)
     
     # Create face tracker with more lenient settings
-    face_tracker = FaceTracker(stability_threshold=2, position_tolerance=0.2)
+    face_tracker = FaceTracker(stability_threshold=4, position_tolerance=0.15)
     
     # Create a separate thread for face detection
     face_detection_thread_active = False
@@ -911,12 +939,12 @@ def main(server_url=None, video_file=None, display_time=None, clear_collection=F
     print("- Faces must be stable for 2 consecutive frames to be processed")
     print("- Press 'p' to pause processing completely")
     print("- Press 's' to take a screenshot")
-    print("\nFACE QUALITY FILTERS (BALANCED):")
-    print("- Face confidence must be > 80%")
-    print("- Face must not be turned more than 45° left/right or 30° up/down")
-    print("- Face brightness and sharpness must be > 20%")
+    print("\nFACE QUALITY FILTERS (STRICTER):")
+    print("- Face confidence must be > 85%")
+    print("- Face must not be turned more than 30° left/right or 20° up/down")
+    print("- Face brightness and sharpness must be > 40%")
     print("- Basic facial features (eyes and nose) must be visible")
-    print("- Face must be at least 10% of frame height")
+    print("- Face must be at least 80 pixels in height")
     print("\nPLAYBACK CONTROLS:")
     print("- Press '+' to increase speed")
     print("- Press '-' to decrease speed")
@@ -932,10 +960,8 @@ def main(server_url=None, video_file=None, display_time=None, clear_collection=F
     try:
         # Main monitoring loop
         running = True
+        
         while running:
-            # Start timer for this frame
-            start_time = time.time()
-            
             # Get frame
             frame = capture.get_frame()
             
@@ -953,99 +979,35 @@ def main(server_url=None, video_file=None, display_time=None, clear_collection=F
                 if face_frame is None:  # Only update if previous frame was processed
                     face_frame = frame.copy()
             
-            # Draw rectangles around active faces
-            display_frame = frame.copy()
+            # Get active faces (keep this line)
             active_faces = face_detector.get_active_faces()
-            for (left, top, right, bottom) in active_faces:
-                cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 255, 0), 2)
             
-            # Add quality indicators for detected faces
-            for face in detected_faces:
-                if 'quality_score' in face and 'bbox' in face:
-                    bbox = face['bbox']
-                    quality = face['quality_score']
-                    # Only draw quality for faces still in active display
-                    if bbox in active_faces:
-                        # Color-code by quality (red->yellow->green)
-                        if quality < 40:
-                            color = (0, 0, 255)  # Red
-                        elif quality < 60:
-                            color = (0, 255, 255)  # Yellow
-                        else:
-                            color = (0, 255, 0)  # Green
-                            
-                        left, top, right, bottom = bbox
-                        # Draw quality indicator
-                        cv2.putText(display_frame, f"Q:{quality:.0f}", 
-                                  (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-            # Get processing status text
-            if processing_enabled:
-                status_text = f"Processing every {process_every_n} frames with balanced filtering"
-                status_color = (0, 255, 255)  # Yellow
-            else:
-                status_text = "Processing PAUSED (press 'p' to resume)"
-                status_color = (0, 0, 255)  # Red
-            
-            # Get source name
-            if isinstance(source, int):
-                source_name = f"Camera {source}"
-            else:
-                source_name = os.path.basename(source)
+            # Only create a display copy if we have faces to draw
+            if active_faces:
+                display_frame = frame.copy()
                 
-                # Add progress bar for video files
-                if not isinstance(source, int):
-                    progress = capture.get_progress()
-                    progress_bar_width = int(display_frame.shape[1] * 0.8)
-                    progress_bar_x = int((display_frame.shape[1] - progress_bar_width) / 2)
-                    progress_bar_y = display_frame.shape[0] - 40
-                    progress_bar_height = 10
-                    
-                    # Draw background
-                    cv2.rectangle(display_frame, 
-                                 (progress_bar_x, progress_bar_y), 
-                                 (progress_bar_x + progress_bar_width, progress_bar_y + progress_bar_height), 
-                                 (100, 100, 100), -1)
-                    
-                    # Draw progress
-                    progress_width = int(progress_bar_width * (progress / 100))
-                    cv2.rectangle(display_frame, 
-                                 (progress_bar_x, progress_bar_y), 
-                                 (progress_bar_x + progress_width, progress_bar_y + progress_bar_height), 
-                                 (0, 255, 0), -1)
-                    
-                    # Draw text
-                    cv2.putText(display_frame, f"{progress:.1f}%", 
-                              (progress_bar_x + progress_bar_width + 10, progress_bar_y + 10), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            # Calculate and display FPS
-            current_time = time.time()
-            if current_time - last_frame_time >= 1.0:  # Update FPS every second
-                display_fps = processed_frames / (current_time - last_frame_time)
-                processed_frames = 0
-                last_frame_time = current_time
-            
-            # Get face count from AWS collection
-            face_count = get_collection_face_count()
-            
-            # Add status text
-            cv2.putText(display_frame, f"AWS Rekognition ({source_name})", 
-                      (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(display_frame, f"Display FPS: {display_fps:.1f} | Active Faces: {len(active_faces)}", 
-                      (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(display_frame, f"Unique faces: {face_count} | Speed: {playback_speed:.2f}x", 
-                      (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(display_frame, f"Face display time: {face_display_time:.1f}s | {status_text}", 
-                      (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-            cv2.putText(display_frame, "q=quit | p=pause | s=screenshot | +/-=speed | d/f=face display time", 
-                      (10, display_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
+                # Draw rectangles around active faces
+                for (left, top, right, bottom) in active_faces:
+                    cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 255, 0), 2)
                 
-            # Show frame
-            cv2.imshow("Face Monitoring", display_frame)
+                # Simple status text - minimal
+                if processing_enabled:
+                    status_text = f"Processing: ON | Speed: {playback_speed:.1f}x"
+                else:
+                    status_text = "Processing: OFF (press 'p' to resume)"
+                    
+                # Add minimal status text
+                cv2.putText(display_frame, status_text, 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    
+                # Show frame with faces
+                cv2.imshow("Face Monitoring", display_frame)
+            else:
+                # Just show original frame without copying
+                cv2.imshow("Face Monitoring", frame)
             
-            # Wait for a small amount of time to process key presses
-            key = cv2.waitKey(1) & 0xFF
+            # Increase wait time for better display sync
+            key = cv2.waitKey(15) & 0xFF
             
             if key == ord('q'):
                 print("Quit requested")
