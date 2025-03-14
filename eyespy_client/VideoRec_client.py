@@ -619,6 +619,8 @@ def check_backend_health():
         print(f"Error connecting to backend server at {backend_url}: {e}")
         return False
 
+# Removed server-side processed face check since AWS Rekognition already handles this
+
 def save_face(frame, bbox):
     """Save a detected face if it's new and upload to backend, or return matched face ID"""
     # Extract face from bounding box
@@ -643,7 +645,7 @@ def save_face(frame, bbox):
         # Debug: Print size of extracted face
         print(f"Extracted face size: {face_image.shape[0]}x{face_image.shape[1]} pixels")
         
-        # Check if this is a new face - with debug info
+        # Check if this is a new face using AWS Rekognition - with debug info
         print("Checking if face is new...")
         is_new, face_id = is_new_face_aws(face_image)
         
