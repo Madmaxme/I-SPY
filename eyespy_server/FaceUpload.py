@@ -682,7 +682,76 @@ def extract_name_candidates(json_data: Dict, page_content: str, source_url: str)
                         "url": source_url,
                         "confidence": 0.7
                     })
+                    
+            # Check for description field which might contain a name
+            if "description" in json_data and json_data["description"]:
+                desc = json_data["description"]
+                if isinstance(desc, str) and len(desc) < 100:  # Only use short descriptions
+                    candidates.append({
+                        "name": desc,
+                        "source": "json_description",
+                        "url": source_url,
+                        "confidence": 0.6
+                    })
+                    
+            # Check for full_content field which might contain names
+            if "full_content" in json_data and json_data["full_content"]:
+                full_content = json_data["full_content"]
+                if isinstance(full_content, str):
+                    # Try to extract potential names from the full_content
+                    # Look for patterns like "Name: John Smith" or "Author: Jane Doe"
+                    name_patterns = [
+                        r"(?:name|author|by|written by)[:;]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+                        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s+(?:is|was|has|had|author)"
+                    ]
+                    
+                    for pattern in name_patterns:
+                        matches = re.findall(pattern, full_content, re.IGNORECASE)
+                        for match in matches:
+                            candidates.append({
+                                "name": match,
+                                "source": "full_content_extracted",
+                                "url": source_url,
+                                "confidence": 0.5
+                            })
         
+        # 3. Look for names in the page_content if no candidates found yet
+        if not candidates and page_content:
+            # Try to extract potential names from headers or prominent text
+            # Look for patterns like "Profile: John Smith" or "About Jane Doe"
+            content_patterns = [
+                r"(?:profile|about|info|user|member)[:;]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+                r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})'s\s+(?:profile|page|account)",
+                r"Welcome\s+(?:back|to)?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})"
+            ]
+            
+            for pattern in content_patterns:
+                matches = re.findall(pattern, page_content, re.IGNORECASE)
+                for match in matches:
+                    candidates.append({
+                        "name": match,
+                        "source": "page_content_extracted",
+                        "url": source_url,
+                        "confidence": 0.4
+                    })
+        
+        # 4. Fall back to extracting domain name if no candidates found
+        if not candidates:
+            domain = extract_domain(source_url)
+            domain_parts = domain.split('.')
+            
+            # Check if domain has a recognizable name part at the beginning
+            if len(domain_parts) >= 3 and domain_parts[0] != 'www':
+                potential_name = domain_parts[0]
+                # Only add if it looks like a name (not a service name like "api", "blog", etc.)
+                if len(potential_name) > 3 and potential_name not in ['api', 'blog', 'forum', 'shop', 'store', 'news']:
+                    candidates.append({
+                        "name": potential_name.capitalize(),
+                        "source": "domain_name",
+                        "url": source_url,
+                        "confidence": 0.3
+                    })
+                        
         # Only include non-empty names and remove duplicates
         filtered_candidates = []
         seen_names = set()
@@ -695,10 +764,16 @@ def extract_name_candidates(json_data: Dict, page_content: str, source_url: str)
                 filtered_candidates.append(candidate)
                 seen_names.add(name.strip().lower())
         
+        # Log the extraction results
+        print(f"Extracted {len(filtered_candidates)} name candidates from {source_url}")
+        for candidate in filtered_candidates:
+            print(f"  - {candidate['name']} (confidence: {candidate['confidence']}, source: {candidate['source']})")
+        
         return filtered_candidates
         
     except Exception as e:
         print(f"Error extracting name candidates: {e}")
+        traceback.print_exc()  # Print full exception for debugging
         return candidates  # Return whatever we have
 
 def analyze_search_result(result: Dict[str, Any], result_index: int, temp_images_dir: str = None, fallback_urls: List[str] = None) -> Dict[str, Any]:
