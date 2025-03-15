@@ -67,17 +67,24 @@ def setup_directories():
 
 def load_processed_faces():
     """Load the list of already processed face files"""
-    if os.path.exists(PROCESSED_FACES_FILE):
-        try:
-            with open(PROCESSED_FACES_FILE, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading processed faces file: {e}")
-    
-    return []
+    try:
+        # Try to use database first if available
+        from db_connector import load_processed_faces as db_load_processed_faces
+        return db_load_processed_faces()
+    except ImportError:
+        # Fall back to file-based method if database module not available
+        if os.path.exists(PROCESSED_FACES_FILE):
+            try:
+                with open(PROCESSED_FACES_FILE, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading processed faces file: {e}")
+        
+        return []
 
 def save_processed_faces(processed_faces):
     """Save the updated list of processed face files"""
+    # For migration compatibility, we still save to local file as well
     try:
         with open(PROCESSED_FACES_FILE, 'w') as f:
             json.dump(processed_faces, f)
@@ -917,24 +924,31 @@ def process_single_face(image_file, timeout=300):
                 "identity_analyses": identity_analyses
             }
             
-            # Extract the basename without extension and path - this will be our directory name
-            base_image_name = os.path.basename(image_file)
-            base_image_name = os.path.splitext(base_image_name)[0]  # Remove extension
+            # Extract the basename without extension and path - this will be our face_id
+            face_id = os.path.basename(image_file)
+            face_id = os.path.splitext(face_id)[0]  # Remove extension
             
-            # Create a simple directory based only on the input file name
-            person_dir = os.path.join(RESULTS_DIR, base_image_name)
-            if not os.path.exists(person_dir):
-                os.makedirs(person_dir)
-                print(f"Created results directory: {person_dir}")
-            
-            # Generate result filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            results_file = os.path.join(person_dir, f"results_{timestamp}.json")
-            
-            # Save to file
-            with open(results_file, 'w') as f:
-                json.dump(results_data, f, indent=2)
-            print(f"Results saved to {results_file} (Directory: {base_image_name})")
+            # Try to use database if available
+            try:
+                from db_connector import save_face_result
+                print(f"Saving results to database for face: {face_id}")
+                save_face_result(face_id, results_data)
+            except ImportError:
+                # Fall back to file-based method if database module not available
+                # Create a simple directory based only on the input file name
+                person_dir = os.path.join(RESULTS_DIR, face_id)
+                if not os.path.exists(person_dir):
+                    os.makedirs(person_dir)
+                    print(f"Created results directory: {person_dir}")
+                
+                # Generate result filename
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                results_file = os.path.join(person_dir, f"results_{timestamp}.json")
+                
+                # Save to file
+                with open(results_file, 'w') as f:
+                    json.dump(results_data, f, indent=2)
+                print(f"Results saved to {results_file} (Directory: {face_id})")
             
             # Mark as processed
             processed_faces = load_processed_faces()
@@ -949,6 +963,7 @@ def process_single_face(image_file, timeout=300):
     
     except Exception as e:
         print(f"Error processing face {os.path.basename(image_file)}: {e}")
+        traceback.print_exc()  # Print stack trace for better debugging
         return False
 
 def process_faces(faces_dir, limit=None, force=False, timeout=300):

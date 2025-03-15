@@ -5,6 +5,7 @@ import threading
 import logging
 import signal
 import sys
+from db_connector import init_connection_pool
 from flask import Flask, request, jsonify
 import FaceUpload
 from bio_integration import integrate_with_controller as integrate_bio
@@ -20,6 +21,14 @@ logger = logging.getLogger("Backend")
 
 # Create Flask app
 app = Flask(__name__)
+
+# Initialize database pool
+try:
+    init_connection_pool()
+    logger.info("Database connection pool initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize database connection: {str(e)}")
+    # Don't fail the whole app if DB connection fails - Cloud Run needs the HTTP server to start
 
 # Create directories for data storage
 import tempfile
@@ -82,6 +91,11 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "ok"})
 
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint for basic health check"""
+    return jsonify({"status": "ok", "message": "EyeSpy server is running"})
+
 @app.route('/api/upload_face', methods=['POST'])
 def upload_face():
     """
@@ -106,10 +120,13 @@ def upload_face():
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         face_file.save(file_path)
         
+        # Extract face_id from filename
+        face_id = os.path.splitext(filename)[0]
+        
         # Process the face in a background thread to avoid blocking the API response
         thread = threading.Thread(
             target=process_face_thread,
-            args=(file_path,),
+            args=(file_path, face_id),
             daemon=True
         )
         thread.start()
@@ -120,10 +137,14 @@ def upload_face():
             "file_id": filename
         })
 
-def process_face_thread(face_path):
+def process_face_thread(face_path, face_id=None):
     """Process a face in a background thread"""
     logger.info(f"Starting processing for: {os.path.basename(face_path)}")
     try:
+        # If face_id not provided, extract from path
+        if face_id is None:
+            face_id = os.path.splitext(os.path.basename(face_path))[0]
+            
         success = FaceUpload.process_single_face(face_path)
         if success:
             logger.info(f"Successfully processed: {os.path.basename(face_path)}")
@@ -154,7 +175,7 @@ def main():
     initialize_components()
     
     # Default port
-    port = int(os.environ.get('PORT', 8000))
+    port = int(os.environ.get('PORT', 8080))
     
     # Parse command line arguments manually for tokens
     args = sys.argv[1:]
@@ -176,5 +197,15 @@ def main():
     print(f"[BACKEND] Starting server on port {port}...")
     app.run(host='0.0.0.0', port=port, debug=False)
 
+# Initialize components at module level
+initialize_components()
+
+# This ensures app will run whether imported as a module or run directly
 if __name__ == "__main__":
     main()
+else:
+    # When running in a container (like Cloud Run), ensure we listen on the correct port
+    port = int(os.environ.get('PORT', 8080))
+    print(f"[BACKEND] Module imported. Starting server on port {port}...")
+    # Do not call app.run() here - it will be called by the container
+    # Instead, we make the Flask app available for gunicorn or other WSGI servers

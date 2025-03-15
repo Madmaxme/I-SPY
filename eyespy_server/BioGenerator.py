@@ -674,14 +674,24 @@ class BioGenerator:
                 filepath = self.save_report(bio, person_dir, bio_filename, data["identity_analyses"])
                 print(f"[BIOGEN] Bio generated and saved to: {filepath}")
                 
-                # Update the main JSON file to include the bio
-                data["bio_text"] = bio
-                data["bio_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                data["bio_file"] = bio_filename
+                # Extract face_id from directory name
+                face_id = os.path.basename(person_dir)
                 
-                # Write the updated JSON back to the file
-                with open(json_file, 'w') as f:
-                    json.dump(data, f, indent=2)
+                try:
+                    # Try to use database if available
+                    from db_connector import save_bio
+                    print(f"[BIOGEN] Saving bio to database for face: {face_id}")
+                    save_bio(face_id, bio, record_analyses, record_search_names)
+                except ImportError:
+                    # Fall back to file-based method if database module not available
+                    # Update the main JSON file to include the bio
+                    data["bio_text"] = bio
+                    data["bio_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    data["bio_file"] = bio_filename
+                    
+                    # Write the updated JSON back to the file
+                    with open(json_file, 'w') as f:
+                        json.dump(data, f, indent=2)
                 
                 return filepath
             else:

@@ -33,7 +33,7 @@ AWS_REGION = "eu-west-1"
 COLLECTION_ID = "eyespy-faces"  
 
 # Backend server configuration
-DEFAULT_BACKEND_URL = "http://localhost:8000"
+DEFAULT_BACKEND_URL = "http://127.0.0.1:8080"
 backend_url = os.environ.get("EYESPY_BACKEND_URL", DEFAULT_BACKEND_URL)
 
 # Initialize variables
@@ -1064,7 +1064,7 @@ if __name__ == "__main__":
     import sys
     
     parser = argparse.ArgumentParser(description='AWS Rekognition Video Monitor')
-    parser.add_argument('--server', default=None, help='Backend server URL (default: http://localhost:8000)')
+    parser.add_argument('--server', default=None, help='Backend server URL (default: http://127.0.0.1:8080)')
     parser.add_argument('--video', default=None, help='Path to video file')
     parser.add_argument('--clear', action='store_true', help='Clear all faces from the collection')
 

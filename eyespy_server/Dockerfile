@@ -2,19 +2,29 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Copy requirements first to leverage Docker caching
+# Copy requirements first for better layer caching
 COPY requirements.txt .
+
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional dependencies
+RUN pip install psycopg2-binary google-cloud-storage
+
+# Install OpenAI for bio generation
 RUN pip install openai
 
-# Copy application code
-COPY . .
+# Install Gunicorn for production serving
+RUN pip install gunicorn
 
-# Create necessary directories
-RUN mkdir -p uploaded_faces face_search_results/temp_images face_search_results/unknown/images
+# Copy the rest of the application
+COPY . /app/
+
+# Make startup script executable
+RUN chmod +x /app/startup.sh
 
 # Expose the port the app runs on
-EXPOSE 8000
+EXPOSE 8080
 
-# Command to run the application
-CMD ["python", "backend_server.py"]
+# Use the startup script to run the application
+CMD ["/app/startup.sh"]
