@@ -14,6 +14,10 @@ import openai
 import traceback
 
 
+try:
+    import db_connector
+except ImportError:
+    raise ImportError("Database connector module is required. Make sure db_connector.py is available.")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -46,50 +50,23 @@ openai.api_key = OPENAI_API_KEY
 # Default directory for detected faces (should match FotoRec.py save_dir)
 DEFAULT_FACES_DIR = "detected_faces"
 
-# Directory to store search results
-RESULTS_DIR = "face_search_results"
 
-# File to track processed faces
-PROCESSED_FACES_FILE = "processed_faces.json"
-
+# WITH this minimal function:
 def setup_directories():
-    """Create necessary directories if they don't exist"""
-    if not os.path.exists(RESULTS_DIR):
-        os.makedirs(RESULTS_DIR)
-        print(f"Created results directory: {RESULTS_DIR}")
-    
-    # Create an 'unknown' directory for results that don't match anyone
-    unknown_dir = os.path.join(RESULTS_DIR, "unknown")
-    if not os.path.exists(unknown_dir):
-        os.makedirs(unknown_dir)
-        
-    return None  # No longer returning temp_images_dir since we store base64 directly
+    """Ensure the detected_faces directory exists for input images"""
+    if not os.path.exists(DEFAULT_FACES_DIR):
+        os.makedirs(DEFAULT_FACES_DIR)
+        print(f"Created faces input directory: {DEFAULT_FACES_DIR}")
+    return None
 
 def load_processed_faces():
-    """Load the list of already processed face files"""
-    try:
-        # Try to use database first if available
-        from db_connector import load_processed_faces as db_load_processed_faces
-        return db_load_processed_faces()
-    except ImportError:
-        # Fall back to file-based method if database module not available
-        if os.path.exists(PROCESSED_FACES_FILE):
-            try:
-                with open(PROCESSED_FACES_FILE, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Error loading processed faces file: {e}")
-        
-        return []
+    """Load the list of already processed face files from database only"""
+    from db_connector import load_processed_faces as db_load_processed_faces
+    return db_load_processed_faces()
 
 def save_processed_faces(processed_faces):
-    """Save the updated list of processed face files"""
-    # For migration compatibility, we still save to local file as well
-    try:
-        with open(PROCESSED_FACES_FILE, 'w') as f:
-            json.dump(processed_faces, f)
-    except Exception as e:
-        print(f"Error saving processed faces file: {e}")
+    """This function is now a no-op as the database tracks processed faces"""
+    pass
         
 
 def get_unprocessed_faces(faces_dir, processed_faces):
@@ -132,6 +109,7 @@ def search_by_face(image_file, timeout=300):
     
     id_search = response['id_search']
     print(response['message'] + ' id_search=' + id_search)
+    
     
     # Step 2: Run the search with timeout
     json_data = {
@@ -928,27 +906,9 @@ def process_single_face(image_file, timeout=300):
             face_id = os.path.basename(image_file)
             face_id = os.path.splitext(face_id)[0]  # Remove extension
             
-            # Try to use database if available
-            try:
-                from db_connector import save_face_result
-                print(f"Saving results to database for face: {face_id}")
-                save_face_result(face_id, results_data)
-            except ImportError:
-                # Fall back to file-based method if database module not available
-                # Create a simple directory based only on the input file name
-                person_dir = os.path.join(RESULTS_DIR, face_id)
-                if not os.path.exists(person_dir):
-                    os.makedirs(person_dir)
-                    print(f"Created results directory: {person_dir}")
-                
-                # Generate result filename
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                results_file = os.path.join(person_dir, f"results_{timestamp}.json")
-                
-                # Save to file
-                with open(results_file, 'w') as f:
-                    json.dump(results_data, f, indent=2)
-                print(f"Results saved to {results_file} (Directory: {face_id})")
+            from db_connector import save_face_result
+            print(f"Saving results to database for face: {face_id}")
+            save_face_result(face_id, results_data)
             
             # Mark as processed
             processed_faces = load_processed_faces()
@@ -1159,7 +1119,7 @@ def main(face_queue=None, shutdown_event=None):
     process_faces(args.dir, args.limit, args.force, args.timeout)
     
     print("\nProcessing complete!")
-    print(f"Results have been saved to the '{RESULTS_DIR}' directory.")
+    print(f"Results have been saved to the database.")
 
 if __name__ == "__main__":
     # When run directly, no queue is provided
