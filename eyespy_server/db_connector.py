@@ -410,54 +410,66 @@ def save_bio(face_id, bio_text, record_data=None, search_names=None):
         cursor.execute("SELECT id FROM person_profiles WHERE face_id = %s", (face_id,))
         profile_exists = cursor.fetchone()
         
+        # Convert search_names to proper PostgreSQL array format
+        if search_names:
+            if isinstance(search_names, list):
+                search_names_array = search_names
+            else:
+                search_names_array = [search_names]
+        else:
+            search_names_array = None
+            
         # Get the full name from record data or first search name
         full_name = None
-        if search_names and len(search_names) > 0:
-            full_name = search_names[0]
+        if search_names_array and len(search_names_array) > 0:
+            full_name = search_names_array[0]
         
         if profile_exists:
-            # Update existing profile
-            cursor.execute(
-                "UPDATE person_profiles SET bio_text = %s, bio_timestamp = %s"
-                + (", record_data = %s, record_timestamp = %s" if record_data else "")
-                + (", record_search_names = %s" if search_names else "")
-                + (", full_name = %s" if full_name else "")
-                + " WHERE face_id = %s",
-                (
-                    [bio_text, datetime.datetime.now()]
-                    + ([json.dumps(record_data), datetime.datetime.now()] if record_data else [])
-                    + ([search_names] if search_names else [])
-                    + ([full_name] if full_name else [])
-                    + [face_id]
-                )
-            )
-        else:
-            # Create new profile
-            query = """
-                INSERT INTO person_profiles (
-                    face_id, bio_text, bio_timestamp
-                    {}, {}, {}
-                ) VALUES (
-                    %s, %s, %s
-                    {}, {}, {}
-                )
-            """.format(
-                ", record_data" if record_data else "",
-                ", record_timestamp" if record_data else "",
-                ", record_search_names" if search_names else "",
-                ", %s" if record_data else "",
-                ", %s" if record_data else "",
-                ", %s" if search_names else ""
-            )
+            # Build update SQL parts conditionally to avoid empty parameters
+            sql_parts = ["UPDATE person_profiles SET bio_text = %s, bio_timestamp = %s"]
+            params = [bio_text, datetime.datetime.now()]
             
-            params = [face_id, bio_text, datetime.datetime.now()]
             if record_data:
+                sql_parts.append(", record_data = %s, record_timestamp = %s")
                 params.extend([json.dumps(record_data), datetime.datetime.now()])
-            if search_names:
-                params.append(search_names)
+                
+            if search_names_array:
+                sql_parts.append(", record_search_names = %s")
+                params.append(search_names_array)
+                
             if full_name:
+                sql_parts.append(", full_name = %s")
                 params.append(full_name)
+                
+            # Add WHERE clause
+            sql_parts.append(" WHERE face_id = %s")
+            params.append(face_id)
             
+            # Execute the constructed query
+            cursor.execute(" ".join(sql_parts), params)
+        else:
+            # For new profiles, only include non-null fields
+            fields = ["face_id", "bio_text", "bio_timestamp"]
+            values = ["%s", "%s", "%s"]
+            params = [face_id, bio_text, datetime.datetime.now()]
+            
+            if record_data:
+                fields.extend(["record_data", "record_timestamp"])
+                values.extend(["%s", "%s"])
+                params.extend([json.dumps(record_data), datetime.datetime.now()])
+                
+            if search_names_array:
+                fields.append("record_search_names")
+                values.append("%s")
+                params.append(search_names_array)
+                
+            if full_name:
+                fields.append("full_name")
+                values.append("%s")
+                params.append(full_name)
+                
+            # Construct the INSERT query
+            query = f"INSERT INTO person_profiles ({', '.join(fields)}) VALUES ({', '.join(values)})"
             cursor.execute(query, params)
 
 def get_face_result(face_id):
@@ -508,6 +520,93 @@ def get_face_result(face_id):
             result["record_search_names"] = profile[7]
         
         return result
+    
+def get_identity_analyses(face_id):
+    """Get properly formatted identity analyses for NameResolver"""
+    with get_db_cursor() as cursor:
+        # Get identity matches
+        cursor.execute("SELECT * FROM identity_matches WHERE face_id = %s", (face_id,))
+        identity_matches = cursor.fetchall()
+        
+        analyses = []
+        for match in identity_matches:
+            # The scraped_data is already a Python dict from the JSONB field
+            # Don't try to parse it again with json.loads()
+            if match[6] is not None:
+                if isinstance(match[6], dict):
+                    # Already a dict, use directly
+                    scraped_data = match[6]
+                elif isinstance(match[6], str):
+                    # String that needs to be parsed
+                    scraped_data = json.loads(match[6])
+                else:
+                    # Fallback
+                    scraped_data = {}
+            else:
+                scraped_data = {}
+            
+            analyses.append({
+                "url": match[2],
+                "score": match[3],
+                "source_type": match[4],
+                "thumbnail_base64": match[5],
+                "scraped_data": scraped_data  # Now correctly handled
+            })
+        
+        return analyses
+
+def get_bio_text(face_id):
+    """Get bio text for a face ID"""
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT bio_text FROM person_profiles WHERE face_id = %s", (face_id,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+def get_record_analyses(face_id):
+    """Get record analyses for a face ID"""
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT record_data FROM person_profiles WHERE face_id = %s", (face_id,))
+        result = cursor.fetchone()
+        if result and result[0]:
+            # Check if already a dict (JSONB auto-conversion)
+            if isinstance(result[0], dict):
+                return result[0]
+            # Otherwise, try to parse as JSON string
+            else:
+                return json.loads(result[0])
+        return None
+
+def save_record_data(face_id, record_data, search_names=None):
+    """Save record data to the database"""
+    with get_db_cursor() as cursor:
+        # Convert search_names to a proper PostgreSQL array format
+        if search_names:
+            # If it's already a list, convert to PostgreSQL array format
+            if isinstance(search_names, list):
+                # PostgreSQL expects array literals as: '{item1,item2,...}'
+                search_names_array = search_names
+            else:
+                # Convert single string to single-item array
+                search_names_array = [search_names]
+        else:
+            search_names_array = None
+            
+        # Check if a profile exists for this face
+        cursor.execute("SELECT id FROM person_profiles WHERE face_id = %s", (face_id,))
+        profile_exists = cursor.fetchone()
+        
+        if profile_exists:
+            # Update existing profile
+            cursor.execute(
+                "UPDATE person_profiles SET record_data = %s, record_timestamp = %s, record_search_names = %s WHERE face_id = %s",
+                (json.dumps(record_data), datetime.datetime.now(), search_names_array, face_id)
+            )
+        else:
+            # Create new profile
+            cursor.execute(
+                "INSERT INTO person_profiles (face_id, record_data, record_timestamp, record_search_names) VALUES (%s, %s, %s, %s)",
+                (face_id, json.dumps(record_data), datetime.datetime.now(), search_names_array)
+            )
 
 class JSONEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle datetime objects."""

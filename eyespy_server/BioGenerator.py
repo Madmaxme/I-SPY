@@ -6,6 +6,8 @@ from datetime import datetime
 import openai
 from dotenv import load_dotenv
 from NameResolver import NameResolver
+from db_connector import get_identity_analyses
+
 
 # Load environment variables from .env file (if it exists)
 load_dotenv()
@@ -23,21 +25,20 @@ class BioGenerator:
         # Initialize the OpenAI client
         self.client = openai.OpenAI(api_key=self.api_key)
     
-    def load_data(self, json_file):
-        """Load and parse the JSON data file"""
+    def load_data(self, face_id):
+        """Load identity analyses data from the database"""
         try:
-            with open(json_file, 'r') as f:
-                data = json.load(f)
+            from db_connector import get_identity_analyses
+            identity_analyses = get_identity_analyses(face_id)
             
-            # Check if the file has the expected structure
-            if "identity_analyses" not in data:
-                raise ValueError("Invalid JSON format: 'identity_analyses' key not found")
+            if not identity_analyses:
+                raise ValueError(f"No identity analyses found for face ID: {face_id}")
             
-            return data
-        except json.JSONDecodeError:
-            raise ValueError(f"Invalid JSON file: {json_file}")
-        except FileNotFoundError:
-            raise ValueError(f"File not found: {json_file}")
+            # Return a data structure similar to what we'd get from JSON file
+            return {"identity_analyses": identity_analyses}
+        except Exception as e:
+            print(f"[BIOGEN] Error loading data from database: {e}")
+            raise
     
     def prepare_summarized_data(self, identity_analyses):
         """
@@ -560,53 +561,6 @@ class BioGenerator:
             traceback.print_exc()
             return None
     
-    def save_report(self, bio, output_dir, filename="bio.txt", identity_analyses=None):
-        """
-        Save the generated bio to a text file in the specified directory
-        and append image sources from identity_analyses
-        """
-        # Ensure output directory exists
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Full path to the bio file
-        filepath = os.path.join(output_dir, filename)
-        
-        # Save the initial bio
-        with open(filepath, 'w') as f:
-            f.write(bio)
-            
-        # Append image sources section if identity_analyses is provided
-        if identity_analyses:
-            try:
-                with open(filepath, 'a') as f:
-                    # Add image sources section
-                    f.write("\n\n**11. Image Sources:**\n")
-                    
-                    # Track if we found any image sources
-                    found_images = False
-                    
-                    # Process each analysis entry
-                    for i, analysis in enumerate(identity_analyses, 1):
-                        # Add original URL with match score
-                        if analysis.get('url'):
-                            score = analysis.get('score', 0)  # Get score or default to 0
-                            f.write(f"   - Source {i}: {analysis['url']} (Match score: {score})\n")
-                            found_images = True
-                            
-                            # Note about thumbnail
-                            if analysis.get('thumbnail_base64'):
-                                f.write(f"     (Thumbnail available in JSON data)\n")
-                    
-                    # If no images were found, add placeholder
-                    if not found_images:
-                        f.write("   - No image sources available.\n")
-                    
-                print(f"[BIOGEN] Added image sources to bio file: {filepath}")
-            except Exception as e:
-                print(f"[BIOGEN] Error appending image sources: {e}")
-        
-        return filepath
-    
     def extract_name(self, identity_analyses):
         """
         Extract the most frequently occurring person's name from the data
@@ -618,126 +572,58 @@ class BioGenerator:
         print(f"[BIOGEN] Using canonical name from NameResolver: '{canonical_name}'")
         return canonical_name
     
-    def process_result_directory(self, person_dir):
+    def process_result_directory(self, face_id):
         """
-        Process a face search result directory and generate a bio
-        This is designed to be called from the FaceUpload module after results are saved
+        Process face results from database and generate a bio
         
         Args:
-            person_dir: Path to the person's result directory within face_search_results/
+            face_id: The face ID to process
             
         Returns:
-            filepath: Path to the generated bio file, or None if unsuccessful
+            bio_text: Generated bio text or None if unsuccessful
         """
-        print(f"[BIOGEN] Processing directory: {person_dir}")
+        print(f"[BIOGEN] Processing face ID: {face_id}")
         
         try:
-            # Find the most recent results JSON file in the directory
-            result_files = [f for f in os.listdir(person_dir) if f.startswith("results_") and f.endswith(".json")]
-            if not result_files:
-                print(f"[BIOGEN] No results files found in {person_dir}")
+            # Import database functions
+            from db_connector import get_identity_analyses, get_record_analyses, save_bio
+            
+            # Get identity analyses from database
+            identity_analyses = get_identity_analyses(face_id)
+            if not identity_analyses:
+                print(f"[BIOGEN] No identity analyses found for face ID: {face_id}")
                 return None
-            
-            # Sort by modification time (newest first)
-            result_files.sort(key=lambda f: os.path.getmtime(os.path.join(person_dir, f)), reverse=True)
-            json_file = os.path.join(person_dir, result_files[0])
-            json_filename = os.path.basename(json_file)
-            results_timestamp = json_filename.replace("results_", "").replace(".json", "")
-            
-            print(f"[BIOGEN] Using results file: {json_file}")
-            
-            # Load the data
-            data = self.load_data(json_file)
             
             # Check if record_analyses is available
-            record_analyses = data.get("record_analyses")
+            record_analyses = get_record_analyses(face_id)
+            record_search_names = None
+            
             if record_analyses:
-                print(f"[BIOGEN] Found record analyses data from {record_analyses.get('provider', 'unknown')}")
+                print(f"[BIOGEN] Found record analyses from {record_analyses.get('provider', 'unknown')}")
                 # Extract search parameters (names) for reference
                 search_params = record_analyses.get("search_params", {})
-                search_names = search_params.get("name", "Unknown")
-                print(f"[BIOGEN] Record search used name(s): {search_names}")
-                # Add this to the data for inclusion in bio
-                data["record_search_names"] = search_names
-            
-            # Get record search names if available
-            record_search_names = data.get("record_search_names")
+                record_search_names = search_params.get("name", "Unknown")
+                print(f"[BIOGEN] Record search used name(s): {record_search_names}")
             
             # Generate the bio with both identity and record data
-            bio = self.generate_bio(data["identity_analyses"], record_analyses, record_search_names)
+            bio = self.generate_bio(identity_analyses, record_analyses, record_search_names)
             
             if bio:
-                # Create matched bio filename based on results JSON
-                bio_filename = f"bio_{results_timestamp}.txt"
+                # Save directly to database - no file operations
+                print(f"[BIOGEN] Saving bio to database for face: {face_id}")
+                save_bio(face_id, bio, record_analyses, record_search_names)
+                print(f"[BIOGEN] Bio successfully saved to database")
                 
-                # Save the report to the person directory, including image sources
-                filepath = self.save_report(bio, person_dir, bio_filename, data["identity_analyses"])
-                print(f"[BIOGEN] Bio generated and saved to: {filepath}")
-                
-                # Extract face_id from directory name
-                face_id = os.path.basename(person_dir)
-                
-                try:
-                    # Try to use database if available
-                    from db_connector import save_bio
-                    print(f"[BIOGEN] Saving bio to database for face: {face_id}")
-                    save_bio(face_id, bio, record_analyses, record_search_names)
-                except ImportError:
-                    # Fall back to file-based method if database module not available
-                    # Update the main JSON file to include the bio
-                    data["bio_text"] = bio
-                    data["bio_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    data["bio_file"] = bio_filename
-                    
-                    # Write the updated JSON back to the file
-                    with open(json_file, 'w') as f:
-                        json.dump(data, f, indent=2)
-                
-                return filepath
+                return bio
             else:
                 print("[BIOGEN] Failed to generate bio.")
                 return None
                 
         except Exception as e:
-            print(f"[BIOGEN] Error processing directory {person_dir}: {e}")
+            print(f"[BIOGEN] Error processing face {face_id}: {e}")
             traceback.print_exc()
             return None
             
-    def process_file(self, json_file):
-        """
-        Process a single results file and generate a bio
-        
-        Args:
-            json_file: Path to the JSON file containing identity_analyses
-            
-        Returns:
-            filepath: Path to the generated bio file, or None if unsuccessful
-        """
-        print(f"[BIOGEN] Processing file: {json_file}")
-        
-        try:
-            # Get the directory containing the JSON file
-            result_dir = os.path.dirname(json_file)
-            
-            # Load the data
-            data = self.load_data(json_file)
-            
-            # Generate the bio
-            bio = self.generate_bio(data["identity_analyses"])
-            
-            if bio:
-                # Save the report in the same directory as the JSON file, including image sources
-                filepath = self.save_report(bio, result_dir, "bio.txt", data["identity_analyses"])
-                print(f"[BIOGEN] Bio generated and saved to: {filepath}")
-                return filepath
-            else:
-                print("[BIOGEN] Failed to generate bio.")
-                return None
-        
-        except Exception as e:
-            print(f"[BIOGEN] Error processing file {json_file}: {e}")
-            traceback.print_exc()
-            return None
 
 
 # For command-line usage (not typically used in the controller integration)
@@ -745,7 +631,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Generate bios from face search results using OpenAI API')
-    parser.add_argument('path', help='Path to the JSON file or directory containing identity analyses')
+    parser.add_argument('path', help='Path to the person directory containing identity analyses')
     parser.add_argument('--api-key', help='OpenAI API key (optional if set in environment)')
     
     args = parser.parse_args()
@@ -754,12 +640,7 @@ if __name__ == "__main__":
         # Initialize the bio generator
         generator = BioGenerator(api_key=args.api_key)
         
-        if os.path.isdir(args.path):
-            # Process directory
-            output_file = generator.process_result_directory(args.path)
-        else:
-            # Process single file
-            output_file = generator.process_file(args.path)
+        output_file = generator.process_result_directory(args.path)
         
         if output_file:
             print(f"[BIOGEN] Successfully generated bio. See {output_file}")

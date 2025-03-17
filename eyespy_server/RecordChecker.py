@@ -998,51 +998,39 @@ class RecordChecker:
         
         return "\n".join(report)
     
-    def process_result_directory(self, person_dir):
+    def process_face_record(self, face_id):
         """
-        Process a face search result directory, add record data to the results JSON if found,
-        but do not generate a separate records report file
+        Process a face record from the database, search for additional records,
+        and save the results back to the database
         
         Args:
-            person_dir: Path to the person's result directory
+            face_id: The face ID to process
             
         Returns:
-            filepath: Path to the updated JSON file, or None if no records found
+            True if records were found and saved, False otherwise
         """
-        print(f"[RECORDCHECKER] Processing directory: {person_dir}")
+        print(f"[RECORDCHECKER] Processing face ID: {face_id}")
         
         try:
-            # Find the most recent results JSON file in the directory
-            result_files = [f for f in os.listdir(person_dir) if f.startswith("results_") and f.endswith(".json")]
-            if not result_files:
-                print(f"[RECORDCHECKER] No results files found in {person_dir}")
-                return None
+            # Import database functions
+            from db_connector import get_identity_analyses, get_bio_text, save_record_data
             
-            # Sort by modification time (newest first)
-            result_files.sort(key=lambda f: os.path.getmtime(os.path.join(person_dir, f)), reverse=True)
-            json_file = os.path.join(person_dir, result_files[0])
-            
-            # Check for bio files (may be named differently now)
-            bio_data = None
-            for file in os.listdir(person_dir):
-                if file.startswith("bio_") and file.endswith(".txt"):
-                    bio_file = os.path.join(person_dir, file)
-                    with open(bio_file, 'r') as f:
-                        bio_data = f.read()
-                    print(f"[RECORDCHECKER] Found bio file: {bio_file}")
-                    break
-            
-            # Load the identity data
-            with open(json_file, 'r') as f:
-                data = json.load(f)
+            # Get identity analyses from database
+            identity_analyses = get_identity_analyses(face_id)
+            if not identity_analyses:
+                print(f"[RECORDCHECKER] No identity analyses found for face ID: {face_id}")
+                return False
+                
+            # Get bio data if available
+            bio_data = get_bio_text(face_id)
             
             # Extract search parameters
-            search_params = self.extract_search_params(bio_data, data["identity_analyses"])
+            search_params = self.extract_search_params(bio_data, identity_analyses)
             
             # If we don't have a name, we can't search
             if not search_params.get("name"):
                 print("[RECORDCHECKER] No name found to search for records")
-                return None
+                return False
             
             print(f"[RECORDCHECKER] Searching for records for: {search_params.get('name')}")
             
@@ -1051,9 +1039,9 @@ class RecordChecker:
             
             # Check if we found any results
             if not search_results:
-                print("[RECORDCHECKER] No records found, skipping record analysis")
+                print("[RECORDCHECKER] No records found")
                 
-                # Add empty record data to the JSON, marking that we checked but found nothing
+                # Create empty record data
                 empty_record_data = {
                     "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
                     "provider": self.provider,
@@ -1070,20 +1058,14 @@ class RecordChecker:
                     }
                 }
                 
-                # Add empty record data to the main results JSON
-                data["record_analyses"] = empty_record_data
-                
-                # Write the updated JSON back to the file
-                with open(json_file, 'w') as f:
-                    json.dump(data, f, indent=2)
-                    
-                print(f"[RECORDCHECKER] Added empty record data to results JSON: {json_file}")
-                return json_file
+                # Save empty record data to database
+                save_record_data(face_id, empty_record_data, search_params.get("name", "Unknown"))
+                return False
             
             # Extract structured personal details
             personal_details = self.extract_personal_details(search_results)
             
-            # Add timestamp to the record data
+            # Create record data
             record_data = {
                 "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
                 "provider": self.provider,
@@ -1093,27 +1075,15 @@ class RecordChecker:
                 "raw_results": search_results
             }
             
-            # Add record data to the main results JSON
-            data["record_analyses"] = record_data
-            
-            # Include searched name(s) explicitly for reference
-            data["record_search_names"] = search_params.get("name", "Unknown")
-            
-            # Write the updated JSON back to the file
-            with open(json_file, 'w') as f:
-                json.dump(data, f, indent=2)
-            
-            print(f"[RECORDCHECKER] Added record data to results JSON: {json_file}")
-            
-            # Note: No longer creating a separate records.txt file
-            # Records data is available in the JSON and will be included in the bio
-            
-            return json_file
+            # Save record data to database
+            save_record_data(face_id, record_data, search_params.get("name", "Unknown"))
+            print(f"[RECORDCHECKER] Added record data to database for face ID: {face_id}")
+            return True
                 
         except Exception as e:
-            print(f"[RECORDCHECKER] Error processing directory {person_dir}: {e}")
+            print(f"[RECORDCHECKER] Error processing face {face_id}: {e}")
             traceback.print_exc()
-            return None
+            return False
 
 
 def integrate_with_biogen():
@@ -1128,13 +1098,13 @@ def integrate_with_biogen():
         original_process_result_directory = BioGenerator.process_result_directory
         
         # Create a wrapped version that adds record checking
-        def process_result_directory_with_records(self, person_dir):
+        def process_result_directory_with_records(self, face_id):
             """Wrapper around original method that adds record checking"""
             # Call the original method to generate the bio
-            bio_filepath = original_process_result_directory(self, person_dir)
+            bio = original_process_result_directory(self, face_id)
             
             # If bio generation was successful, check records
-            if bio_filepath:
+            if bio:
                 try:
                     print(f"[RECORDCHECKER] Bio generation complete, now checking records")
                     
@@ -1144,15 +1114,15 @@ def integrate_with_biogen():
                     # Check records in a separate thread to not block
                     import threading
                     threading.Thread(
-                        target=checker.process_result_directory,
-                        args=(person_dir,),
+                        target=checker.process_face_record,
+                        args=(face_id,),
                         daemon=True
                     ).start()
                     
                 except Exception as e:
                     print(f"[RECORDCHECKER] Error setting up record checking: {e}")
             
-            return bio_filepath
+            return bio
         
         # Replace the original method with our wrapped version
         BioGenerator.process_result_directory = process_result_directory_with_records

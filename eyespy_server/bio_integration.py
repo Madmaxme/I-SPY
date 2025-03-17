@@ -3,15 +3,13 @@
 Integration module for adding bio generation to the FaceUpload pipeline
 This should be imported in FaceUpload.py
 """
-
 import os
-import time
 import threading
 import traceback
-import json
 from BioGenerator import BioGenerator
 from RecordChecker import RecordChecker
 from NameResolver import NameResolver
+from db_connector import get_identity_analyses
 
 def add_bio_generator_to_faceupload():
     """
@@ -33,20 +31,16 @@ def add_bio_generator_to_faceupload():
             # If successful, generate bio in a separate thread
             if success:
                 try:
-                    # Extract the base_image_name from the image_file path
-                    base_image_name = os.path.basename(image_file)
-                    base_image_name = os.path.splitext(base_image_name)[0]  # Remove extension
+                    # Extract the face_id from the image_file path
+                    face_id = os.path.basename(image_file)
+                    face_id = os.path.splitext(face_id)[0]  # Remove extension
                     
-                    # Construct the person directory path
-                    person_dir = os.path.join(FaceUpload.RESULTS_DIR, base_image_name)
-                    
-                    if os.path.exists(person_dir):
-                        # Run bio generation in a separate thread to not block
-                        threading.Thread(
-                            target=process_directory_with_records_then_bio,
-                            args=(person_dir,),
-                            daemon=True
-                        ).start()
+                    # Run bio generation in a separate thread to not block
+                    threading.Thread(
+                        target=process_face_with_records_then_bio,
+                        args=(face_id,),
+                        daemon=True
+                    ).start()
                 except Exception as e:
                     print(f"[BIO_INTEGRATION] Error setting up bio generation: {e}")
             
@@ -63,62 +57,50 @@ def add_bio_generator_to_faceupload():
         return False
 
 
-def process_directory_with_records_then_bio(person_dir):
+def process_face_with_records_then_bio(face_id):
     """
-    Process a directory with records search first, then bio generation
+    Process a face with records search first, then bio generation
     This function is called in a separate thread after face search completes
     
     Args:
-        person_dir: Path to the person's directory within the RESULTS_DIR
+        face_id: Face ID to process
     """
     try:
-        # Small delay to make sure the results file is fully written
-        time.sleep(2)
+        print(f"[BIO_INTEGRATION] Starting processing for face ID: {face_id}")
         
-        print(f"[BIO_INTEGRATION] Starting processing for: {person_dir}")
-        
-        # Step 0: Load the results JSON file to get identity_analyses
-        result_files = [f for f in os.listdir(person_dir) if f.startswith("results_") and f.endswith(".json")]
-        if not result_files:
-            print(f"[BIO_INTEGRATION] No results files found in {person_dir}")
+        # Step 0: Get identity_analyses from database
+        identity_analyses = get_identity_analyses(face_id)
+        if not identity_analyses:
+            print(f"[BIO_INTEGRATION] No identity analyses found for face ID: {face_id}")
             return
 
-        # Sort by modification time (newest first)
-        result_files.sort(key=lambda f: os.path.getmtime(os.path.join(person_dir, f)), reverse=True)
-        json_file = os.path.join(person_dir, result_files[0])
-        
-        # Load the data
-        with open(json_file, 'r') as f:
-            data = json.load(f)
-        
         # Getting canonical name first ensures it's determined consistently
-        identity_analyses = data.get("identity_analyses", [])
         if identity_analyses:
             canonical_name = NameResolver.resolve_canonical_name(identity_analyses)
             print(f"[BIO_INTEGRATION] Canonical name resolved: '{canonical_name}'")
         else:
-            print(f"[BIO_INTEGRATION] No identity analyses found in {json_file}")
+            print(f"[BIO_INTEGRATION] No identity analyses found for face ID: {face_id}")
             canonical_name = "Unknown Person"
         
         # Step 1: Check records first
-        print(f"[BIO_INTEGRATION] Starting record checking for: {person_dir}")
+        print(f"[BIO_INTEGRATION] Starting record checking for face ID: {face_id}")
         record_checker = RecordChecker()
-        record_json = record_checker.process_result_directory(person_dir)
+        record_success = record_checker.process_face_record(face_id)
         
-        if record_json:
-            print(f"[BIO_INTEGRATION] Record checking complete, added to: {record_json}")
+        if record_success:
+            print(f"[BIO_INTEGRATION] Record checking complete for face ID: {face_id}")
         else:
-            print(f"[BIO_INTEGRATION] Record checking failed or no records found")
+            print(f"[BIO_INTEGRATION] Record checking failed or no records found for face ID: {face_id}")
         
         # Step 2: Generate bio after record checking
-        print(f"[BIO_INTEGRATION] Starting bio generation for: {person_dir}")
+        print(f"[BIO_INTEGRATION] Starting bio generation for face ID: {face_id}")
         generator = BioGenerator()
-        bio_file = generator.process_result_directory(person_dir)
+        bio = generator.process_result_directory(face_id)
         
-        if bio_file:
-            print(f"[BIO_INTEGRATION] Bio generation complete: {bio_file}")
+        if bio:
+            print(f"[BIO_INTEGRATION] Bio generation complete for face ID: {face_id}")
         else:
-            print(f"[BIO_INTEGRATION] Bio generation failed for: {person_dir}")
+            print(f"[BIO_INTEGRATION] Bio generation failed for face ID: {face_id}")
     
     except Exception as e:
         print(f"[BIO_INTEGRATION] Error in combined processing: {e}")
