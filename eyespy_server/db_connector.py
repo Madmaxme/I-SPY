@@ -3,7 +3,6 @@ import psycopg2
 import subprocess
 import atexit
 import time
-import signal
 import platform
 from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
@@ -12,7 +11,9 @@ import json
 import datetime
 import logging
 import tempfile
-import shutil
+
+_pool_initialized = False
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -151,7 +152,12 @@ def is_running_in_cloud():
 
 def init_connection_pool():
     """Initialize the connection pool."""
-    global pool
+    global pool, _pool_initialized
+
+    if pool is not None and _pool_initialized:
+        logger.info("Database connection pool already initialized, reusing existing pool")
+        return pool
+    
     
     # Check for DATABASE_URL first (new format)
     database_url = os.environ.get("DATABASE_URL")
@@ -241,7 +247,9 @@ def init_connection_pool():
         
         # Create the database schema if it doesn't exist
         create_schema()
-        
+
+
+        _pool_initialized = True
         return pool
     except psycopg2.OperationalError as e:
         logger.error(f"Failed to initialize connection pool: {e}")
@@ -614,3 +622,33 @@ class JSONEncoder(json.JSONEncoder):
         if isinstance(obj, datetime.datetime):
             return obj.strftime("%Y%m%d_%H%M%S")
         return json.JSONEncoder.default(self, obj)
+    
+
+def validate_database_connection():
+    """Test the database connection with a simple query"""
+    try:
+        with get_db_cursor() as cursor:
+            # Try a simple query
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            
+            if result and result[0] == 1:
+                print("DATABASE CONNECTION TEST: SUCCESS")
+                
+                # Try to count rows in critical tables
+                tables = ["faces", "identity_matches", "person_profiles", "raw_results"]
+                for table in tables:
+                    try:
+                        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                        count = cursor.fetchone()[0]
+                        print(f"Table '{table}' exists and has {count} rows")
+                    except Exception as e:
+                        print(f"Error accessing table '{table}': {e}")
+                
+                return True
+            else:
+                print("DATABASE CONNECTION TEST: FAILED - Query returned unexpected result")
+                return False
+    except Exception as e:
+        print(f"DATABASE CONNECTION TEST: FAILED - {e}")
+        return False

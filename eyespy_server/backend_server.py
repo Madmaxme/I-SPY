@@ -5,12 +5,13 @@ import threading
 import logging
 import signal
 import sys
-from db_connector import init_connection_pool
+from db_connector import init_connection_pool, validate_database_connection
 from flask import Flask, request, jsonify
 import FaceUpload
 from bio_integration import integrate_with_controller as integrate_bio
 from record_integration import integrate_records_with_controller as integrate_records
 from werkzeug.utils import secure_filename
+
 
 # Set up logging
 logging.basicConfig(
@@ -170,9 +171,13 @@ def main():
     ║       Face Processing & Identity Search     ║
     ╚═════════════════════════════════════════════╝
     """)
+
+    validate_database_connection()
     
     # Initialize components
     initialize_components()
+
+    validate_database_connection()
     
     # Default port
     port = int(os.environ.get('PORT', 8080))
