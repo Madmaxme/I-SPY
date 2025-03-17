@@ -1088,51 +1088,13 @@ class RecordChecker:
 
 def integrate_with_biogen():
     """
-    Patch the BioGenerator module to add record checking after bio generation
-    This should be called during system initialization
+    This integration is disabled because it causes race conditions with bio_integration.py
+    bio_integration.py already handles record checking before bio generation.
+    This function is kept as a placeholder for reference.
     """
-    try:
-        from BioGenerator import BioGenerator
-        
-        # Store the original process_result_directory method
-        original_process_result_directory = BioGenerator.process_result_directory
-        
-        # Create a wrapped version that adds record checking
-        def process_result_directory_with_records(self, face_id):
-            """Wrapper around original method that adds record checking"""
-            # Call the original method to generate the bio
-            bio = original_process_result_directory(self, face_id)
-            
-            # If bio generation was successful, check records
-            if bio:
-                try:
-                    print(f"[RECORDCHECKER] Bio generation complete, now checking records")
-                    
-                    # Initialize record checker
-                    checker = RecordChecker()
-                    
-                    # Check records in a separate thread to not block
-                    import threading
-                    threading.Thread(
-                        target=checker.process_face_record,
-                        args=(face_id,),
-                        daemon=True
-                    ).start()
-                    
-                except Exception as e:
-                    print(f"[RECORDCHECKER] Error setting up record checking: {e}")
-            
-            return bio
-        
-        # Replace the original method with our wrapped version
-        BioGenerator.process_result_directory = process_result_directory_with_records
-        
-        print("[RECORDCHECKER] Successfully integrated record checking with BioGenerator")
-        return True
-    
-    except Exception as e:
-        print(f"[RECORDCHECKER] Failed to integrate record checking: {e}")
-        return False
+    print("[RECORDCHECKER] BioGenerator integration through RecordChecker is disabled to prevent race conditions")
+    print("[RECORDCHECKER] Use bio_integration.py for the proper integration flow")
+    return False
 
 
 # For command-line usage

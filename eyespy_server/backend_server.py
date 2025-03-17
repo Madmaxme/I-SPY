@@ -197,8 +197,6 @@ def main():
     print(f"[BACKEND] Starting server on port {port}...")
     app.run(host='0.0.0.0', port=port, debug=False)
 
-# Initialize components at module level
-initialize_components()
 
 # This ensures app will run whether imported as a module or run directly
 if __name__ == "__main__":
